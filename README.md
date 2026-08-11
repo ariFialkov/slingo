@@ -1,7 +1,7 @@
 # Slingo
 
 A 2.5D slingshot betting game, playable on mobile and desktop as an installable PWA.
-Pull back the slingshot, fire at a 5×5 jumbo board of mystery tiles, and chase
+Pull back the slingshot, fire at a 3×3 jumbo board of mystery tiles, and chase
 line-pattern bonuses.
 
 ## Play it
@@ -52,11 +52,12 @@ question-mark watermark, a type-distinct background color, and its glowing cost.
 
 Winning tiles keep their perimeter lit while they extend a straight line of
 *consecutive* winners. A losing hit, or a winner that doesn't continue the line,
-clears the lights (the newest winner stays lit if it won). Deterministic awards:
+clears the lights (the newest winner stays lit if it won). Deterministic awards
+(a full line on the 3×3 board is 3 tiles; diagonals run through the centre, so
+they pay more):
 
-- **3-tile diagonal**: last won prize ×1.5
-- **5-tile horizontal/vertical**: last won prize ×3
-- **5-tile diagonal**: last won prize ×5
+- **3-tile horizontal/vertical line**: last won prize ×2
+- **3-tile diagonal**: last won prize ×3
 
 ## RTP math
 

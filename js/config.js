@@ -11,11 +11,14 @@ export const TILE_RTP = 0.94; // per-bet EV; ~2% headroom funds pattern bonuses
 export const START_BALANCE = 200;
 export const TOPUP_AMOUNT = 100;
 
+// Board is GRID × GRID.
+export const GRID = 3;
+
 // Pattern bonuses: extra payout = (mult - 1) × last won prize.
+// On a 3×3 board a full line is 3 tiles; diagonals (through the centre) pay more.
 export const BONUS = {
-  diag3: { mult: 1.5, label: '3-DIAGONAL' },
-  line5: { mult: 3, label: '5-LINE' },
-  diag5: { mult: 5, label: '5-DIAGONAL' },
+  line3: { mult: 2, label: 'LINE' },
+  diag3: { mult: 3, label: 'DIAGONAL' },
 };
 
 // Prize tables: [multiplier, probability]. Remaining probability = lose (×0).

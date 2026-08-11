@@ -1,6 +1,6 @@
 // Slingo — main game: board, slingshot, projectile, streak bonuses, rendering.
 import {
-  TYPES, BONUS, START_BALANCE, TOPUP_AMOUNT, RESPAWN_DELAY_MS,
+  TYPES, BONUS, GRID, START_BALANCE, TOPUP_AMOUNT, RESPAWN_DELAY_MS,
   RISK_MAX_MULT, ROULETTE_MULT, stepperStepProb, fmtMoney, TILE_RTP,
 } from './config.js';
 import {
@@ -28,35 +28,40 @@ function layout() {
   canvas.style.width = W + 'px';
   canvas.style.height = H + 'px';
 
-  board.top = H * 0.085;
-  board.bottom = H * 0.60;
+  // Board fills the screen in at least one dimension, leaving a small strip
+  // at the bottom for the slingshot.
+  const availTop = H * 0.075;
+  const availH = H * 0.8 - availTop;
+  const bw = Math.min(W * 0.97, availH * 1.05);
+  const bh = Math.min(availH, bw * 1.25); // cap tile stretch
+  board.top = availTop + (availH - bh) / 2; // centre in the available area
+  board.bottom = board.top + bh;
   board.cx = W / 2;
-  const maxW = Math.min(W * 0.96, (board.bottom - board.top) * 1.12);
-  board.wBottom = maxW;
-  board.wTop = maxW * 0.8;
+  board.wBottom = bw;
+  board.wTop = bw * 0.87;
 
   sling.ax = W / 2;
-  sling.ay = H * 0.85;
-  sling.maxPull = Math.min(W, H) * 0.26;
+  sling.ay = H * 0.895;
+  sling.maxPull = Math.min(Math.min(W, H) * 0.22, (H - sling.ay) * 1.8);
 }
 window.addEventListener('resize', layout);
 layout();
 
-// Board mapping: (u,v) ∈ [0,5]² → screen, v=0 is the far (top) row.
-function rowY(v) { return board.top + (board.bottom - board.top) * (v / 5); }
-function rowW(v) { return board.wTop + (board.wBottom - board.wTop) * (v / 5); }
-function boardPt(u, v) { return { x: board.cx + (u / 5 - 0.5) * rowW(v), y: rowY(v) }; }
+// Board mapping: (u,v) ∈ [0,GRID]² → screen, v=0 is the far (top) row.
+function rowY(v) { return board.top + (board.bottom - board.top) * (v / GRID); }
+function rowW(v) { return board.wTop + (board.wBottom - board.wTop) * (v / GRID); }
+function boardPt(u, v) { return { x: board.cx + (u / GRID - 0.5) * rowW(v), y: rowY(v) }; }
 function screenToBoard(x, y) {
-  const v = ((y - board.top) / (board.bottom - board.top)) * 5;
-  if (v < 0 || v >= 5) return null;
-  const u = ((x - board.cx) / rowW(v) + 0.5) * 5;
-  if (u < 0 || u >= 5) return null;
+  const v = ((y - board.top) / (board.bottom - board.top)) * GRID;
+  if (v < 0 || v >= GRID) return null;
+  const u = ((x - board.cx) / rowW(v) + 0.5) * GRID;
+  if (u < 0 || u >= GRID) return null;
   return { u, v };
 }
 function tileRect(r, c) {
   const p = boardPt(c + 0.5, r + 0.5);
-  const w = (rowW(r + 0.5) / 5) * 0.94;
-  const h = (rowY(r + 1) - rowY(r)) * 0.92;
+  const w = (rowW(r + 0.5) / GRID) * 0.95;
+  const h = (rowY(r + 1) - rowY(r)) * 0.94;
   return { cx: p.x, cy: p.y, w, h };
 }
 
@@ -79,8 +84,8 @@ const state = {
   now: performance.now(),
 };
 
-for (let r = 0; r < 5; r++) {
-  for (let c = 0; c < 5; c++) {
+for (let r = 0; r < GRID; r++) {
+  for (let c = 0; c < GRID; c++) {
     state.cells.push({
       r, c,
       tile: makeTile(),
@@ -91,7 +96,7 @@ for (let r = 0; r < 5; r++) {
     });
   }
 }
-const cellAt = (r, c) => state.cells[r * 5 + c];
+const cellAt = (r, c) => state.cells[r * GRID + c];
 const cellKey = (cell) => cell.r + ',' + cell.c;
 
 function schedule(delay, fn) { state.pending.push({ at: state.now + delay, fn }); }
@@ -160,9 +165,8 @@ function streakOnWin(cell, prize) {
   }
   const len = s.cells.length;
   const diag = s.dir && s.dir[0] !== 0 && s.dir[1] !== 0;
-  if (len === 3 && diag) awardBonus(BONUS.diag3, prize);
-  if (len === 5) {
-    awardBonus(diag ? BONUS.diag5 : BONUS.line5, prize);
+  if (len === GRID) {
+    awardBonus(diag ? BONUS.diag3 : BONUS.line3, prize);
     clearStreak(null);
   }
 }
@@ -303,7 +307,7 @@ function shuffle(arr) {
 canvas.addEventListener('pointerdown', (e) => {
   initAudio();
   if (state.drag || !state.loaded) return;
-  if (e.clientY < H * 0.62) return; // must grab in the slingshot zone
+  if (e.clientY < board.bottom + 8) return; // must grab below the board
   canvas.setPointerCapture(e.pointerId);
   state.drag = { id: e.pointerId, px: e.clientX, py: e.clientY, buzzed: false };
   e.preventDefault();
@@ -475,7 +479,7 @@ function render() {
 function drawBoardPanel() {
   // jumbo-board backing (trapezoid for the 2.5D look)
   const m = 14;
-  const tl = boardPt(0, 0), tr = boardPt(5, 0), bl = boardPt(0, 5), br = boardPt(5, 5);
+  const tl = boardPt(0, 0), tr = boardPt(GRID, 0), bl = boardPt(0, GRID), br = boardPt(GRID, GRID);
   ctx.beginPath();
   ctx.moveTo(tl.x - m, tl.y - m);
   ctx.lineTo(tr.x + m, tr.y - m);
@@ -741,10 +745,10 @@ function drawLitPerimeters(now) {
 function drawSlingshot(now) {
   const pouch = pouchPos();
   const S = Math.min(W, H);
-  const forkY = sling.ay - S * 0.055;
-  const forkL = { x: sling.ax - S * 0.085, y: forkY };
-  const forkR = { x: sling.ax + S * 0.085, y: forkY };
-  const baseY = Math.min(H - 8, sling.ay + S * 0.16);
+  const forkY = sling.ay - S * 0.045;
+  const forkL = { x: sling.ax - S * 0.07, y: forkY };
+  const forkR = { x: sling.ax + S * 0.07, y: forkY };
+  const baseY = Math.min(H - 8, sling.ay + S * 0.11);
 
   // frame
   ctx.lineCap = 'round';
@@ -752,14 +756,14 @@ function drawSlingshot(now) {
   ctx.lineWidth = 11;
   ctx.beginPath();
   ctx.moveTo(sling.ax, baseY);
-  ctx.lineTo(sling.ax, sling.ay + S * 0.06);
+  ctx.lineTo(sling.ax, sling.ay + S * 0.045);
   ctx.stroke();
   ctx.lineWidth = 9;
   ctx.beginPath();
-  ctx.moveTo(sling.ax, sling.ay + S * 0.06);
-  ctx.quadraticCurveTo(forkL.x, sling.ay + S * 0.015, forkL.x, forkY);
-  ctx.moveTo(sling.ax, sling.ay + S * 0.06);
-  ctx.quadraticCurveTo(forkR.x, sling.ay + S * 0.015, forkR.x, forkY);
+  ctx.moveTo(sling.ax, sling.ay + S * 0.045);
+  ctx.quadraticCurveTo(forkL.x, sling.ay + S * 0.01, forkL.x, forkY);
+  ctx.moveTo(sling.ax, sling.ay + S * 0.045);
+  ctx.quadraticCurveTo(forkR.x, sling.ay + S * 0.01, forkR.x, forkY);
   ctx.stroke();
 
   // elastic bands
