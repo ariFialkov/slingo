@@ -56,11 +56,9 @@ export const TABLES = {
     [50, 0.004],
     [100, 0.0004],
   ],
-  // Almost always loses / tiny return, 0.17% chance of a fixed 500×.
+  // Pure jackpot: ×500 or nothing. p = RTP/500 = 0.188%.
   jackpot: [
-    [0.5, 0.08],
-    [1, 0.05],
-    [500, 0.0017],
+    [500, TILE_RTP / 500],
   ],
   // Binary; probability chosen to hit tile RTP.
   double: [[2, TILE_RTP / 2]],

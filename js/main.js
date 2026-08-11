@@ -773,25 +773,25 @@ function drawRouletteFront(tile, def, pulse) {
 }
 
 function drawStepperFront(tile, def, pulse) {
-  // two electronic counters
-  rr(-42, -33, 40, 15, 3); ctx.fillStyle = '#0a0a12'; ctx.fill();
-  rr(2, -33, 40, 15, 3); ctx.fillStyle = '#0a0a12'; ctx.fill();
+  // two electronic counters: cash-out value | next-step success %
+  rr(-42, -35, 40, 15, 3); ctx.fillStyle = '#0a0a12'; ctx.fill();
+  rr(2, -35, 40, 15, 3); ctx.fillStyle = '#0a0a12'; ctx.fill();
   const left = tile.active ? fmtMoney(tile.value) : fmtMoney(tile.cost);
   const right = tile.active ? `${Math.round(stepperStepProb(tile.step + 1) * 100)}%` : 'COST';
-  text(left, -22, -25.5, 9.5, '#7dff8a', { glow: 3 });
-  text(right, 22, -25.5, 9.5, tile.active ? '#ffd94d' : '#8a8fa8', { glow: tile.active ? 3 : 0 });
-  // buttons
-  rr(-32, -14, 64, 26, 6);
+  text(left, -22, -27.5, 9.5, '#7dff8a', { glow: 3 });
+  text(right, 22, -27.5, 9.5, tile.active ? '#ffd94d' : '#8a8fa8', { glow: tile.active ? 3 : 0 });
+  // single STEP button (matches the hit zone: x 0.2–0.8, y 0.4–0.72)
+  rr(-30, -10, 60, 32, 7);
   ctx.fillStyle = tile.active ? '#3d9e46' : '#2c2f6e';
   ctx.fill();
   ctx.strokeStyle = def.accent; ctx.lineWidth = 2; ctx.stroke();
-  text(tile.active ? 'STEP ▲' : 'START ▲', 0, -1, 11, '#fff', { glow: pulse * 0.4 });
-  rr(-32, 16, 64, 26, 6);
-  ctx.fillStyle = tile.active ? '#9e6b2c' : '#2c2f6e';
-  ctx.fill();
-  ctx.strokeStyle = def.accent; ctx.lineWidth = 2; ctx.stroke();
-  text(tile.active ? 'CASH ▼' : 'START ▼', 0, 29, 11, '#fff');
-  if (tile.active) text(`step ${tile.step}`, 0, 46, 7, 'rgba(255,255,255,0.7)');
+  text(tile.active ? 'STEP ▲' : 'START', 0, 6, 12, '#fff', { glow: pulse * 0.4 });
+  if (tile.active) {
+    text('HIT OUTSIDE = CASH OUT', 0, 33, 6.5, '#ffd94d', { glow: 2 });
+    text(`step ${tile.step}`, 0, 44, 7, 'rgba(255,255,255,0.7)');
+  } else {
+    text('hit anywhere to start', 0, 33, 7, 'rgba(255,255,255,0.65)');
+  }
 }
 
 function drawTileBack(cell) {
@@ -804,7 +804,7 @@ function drawTileBack(cell) {
     text(fmtMoney(res.prize), 0, 2, 24, '#7dffb9', { glow: 8 });
     text(res.label, 0, 30, 11, 'rgba(255,255,255,0.85)');
   } else {
-    text(res.label === 'CRASH' ? '💥' : '✕', 0, -18, 26, '#ff8d8d');
+    text('✕', 0, -18, 26, '#ff8d8d');
     text(res.label, 0, 16, 12, 'rgba(255,255,255,0.85)');
   }
 }

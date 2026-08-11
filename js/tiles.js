@@ -176,18 +176,16 @@ export function hitTile(tile, fx, fy, now) {
       return { kind: 'roulette-place', cost, winner, win: won, prize: won ? ROULETTE_MULT * tile.cost : 0 };
     }
     case 'stepper': {
-      const btn = stepperButtonAt(fx, fy);
-      if (btn === 0) return { kind: 'none' };
       if (!tile.active) {
-        // First hit on either button starts the game and places the bet.
+        // First hit anywhere on the tile starts the game and places the bet.
         tile.active = true;
         tile.step = 0;
         tile.value = TILE_RTP * tile.cost;
         tile.crashStep = rollCrashStep();
         return { kind: 'interact', sound: 'step', startCost: tile.cost };
       }
-      if (btn === 1) {
-        // Top button: take another step.
+      if (stepperButtonAt(fx, fy)) {
+        // The STEP button: take another step.
         const k = tile.step + 1;
         if (k >= tile.crashStep) {
           tile.active = false;
@@ -197,7 +195,7 @@ export function hitTile(tile, fx, fy, now) {
         tile.step = k;
         return { kind: 'interact', sound: 'step' };
       }
-      // Bottom button: cash out at the current value.
+      // Anywhere else on the tile: cash out at the current value.
       const prize = tile.value;
       tile.active = false;
       return { kind: 'bet', cost: 0, prize, label: 'CASH OUT', prePaid: true };
@@ -234,12 +232,9 @@ export function rouletteCubeRect(i) {
   };
 }
 
-// Stepper buttons (tile-local): 1 = top (step), 2 = bottom (cash out), 0 = none.
+// The single STEP button (tile-local); anywhere outside it cashes out.
 export function stepperButtonAt(fx, fy) {
-  if (fx < 0.18 || fx > 0.82) return 0;
-  if (fy > 0.3 && fy < 0.58) return 1;
-  if (fy > 0.64 && fy < 0.92) return 2;
-  return 0;
+  return fx > 0.2 && fx < 0.8 && fy > 0.4 && fy < 0.72;
 }
 
 export function tileCostLabel(tile) {
