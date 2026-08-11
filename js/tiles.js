@@ -87,10 +87,7 @@ export function instantOutcome(tile, stake, now) {
       return rollTable(TABLES[tile.type]) * stake;
     case 'hilo': {
       const v = tile.variant;
-      const roll = Math.random();
-      if (roll < v.pHigh) return v.high * stake;
-      if (roll < v.pHigh + v.pLow) return v.low * stake;
-      return 0;
+      return (Math.random() < v.pHigh ? v.high : v.low) * stake;
     }
     case 'risk': {
       const r = riskPosition(tile, now);
@@ -126,17 +123,19 @@ export function hitTile(tile, fx, fy, now) {
     }
     case 'hilo': {
       const v = tile.variant;
-      const roll = Math.random();
-      let mult = 0, label = 'MISS';
-      if (roll < v.pHigh) { mult = v.high; label = `HIGH ×${v.high}`; }
-      else if (roll < v.pHigh + v.pLow) { mult = v.low; label = `LOW ×${v.low}`; }
-      return { kind: 'bet', cost: tile.cost, prize: mult * tile.cost, label };
+      const isHigh = Math.random() < v.pHigh;
+      const mult = isHigh ? v.high : v.low;
+      return {
+        kind: 'bet', cost: tile.cost, prize: mult * tile.cost,
+        label: isHigh ? `HIGH ×${v.high}` : `LOW ×${v.low}`,
+      };
     }
     case 'fill': {
       // Doggy-door slot: lower middle of the tile.
       if (fx > 0.32 && fx < 0.68 && fy > 0.58 && fy < 0.95) {
         tile.fill += tile.increment;
-        return { kind: 'interact', sound: 'fill' };
+        tile.doorT = now; // swing the door open and drop the ball through
+        return { kind: 'interact', sound: 'fill', swallow: true };
       }
       if (tile.fill <= 0) return { kind: 'none' };
       const stake = tile.fill;

@@ -24,6 +24,10 @@ standalone app (manifest + service worker included; works offline after first lo
   strength.
 - **Desktop**: identical, with click-and-drag.
 
+While aiming, a filled trajectory line and a glowing reticle mark the exact
+landing point of the shot. The ⟳ button on the right edge refreshes the whole
+board with fresh tiles.
+
 The game opens straight into play with the slingshot primed and a ball loaded.
 Hitting a tile places an isolated bet at the cost shown on its face; the tile spins
 around its central vertical pivot before settling on its back side, which shows the
@@ -41,7 +45,7 @@ question-mark watermark, a type-distinct background color, and its glowing cost.
 | **Wild** | ~5% hit rate, ×10 up to ×100. |
 | **Jackpot** | Almost always loses or returns small; 0.17% chance of a fixed ×500. |
 | **Double or Nothing** | ×2 at 47%, else nothing. |
-| **High / Low** | Two outcomes with displayed multipliers and percentages (e.g. ▲×3 @ 18%, ▼×0.8 @ 50%); binary but not even odds. |
+| **High / Low** | Strictly binary: every bet lands on one of the two displayed options and the percentages sum to 100 (e.g. ▲×1.6 @ 40%, ▼×0.5 @ 60%); a miss only exists in the variant whose low option is ×0. |
 | **Fill & Deal** | Shots into the doggy-door slot each add $1/$2/$5/$10/$25 (per tile) to the counter; a shot anywhere else on the tile places the accumulated bet on the standard table. |
 | **Risk Slider** | Fixed cost; a slider oscillates 0%→100%→0% every 2 s. Risk r gives multiplier 1+49r and win chance RTP/mult — hit the tile to lock in the current risk. |
 | **Randomizer** | Shows a count 1–5 (2–3 most common). On hit, that many random tiles resolve simultaneously, splitting the stake. |

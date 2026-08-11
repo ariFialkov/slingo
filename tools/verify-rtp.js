@@ -18,10 +18,9 @@ for (const [name, table] of Object.entries(TABLES)) {
   check(`table:${name}`, table.reduce((s, [m, p]) => s + m * p, 0));
 }
 
-// High-Low variants
+// High-Low variants (binary: pLow = 1 - pHigh)
 HILO_VARIANTS.forEach((v, i) => {
-  if (v.pHigh + v.pLow > 1) { failed = true; console.log(`FAIL  hilo[${i}] probabilities exceed 1`); }
-  check(`hilo[${i}] ×${v.high}/${v.low}`, v.pHigh * v.high + v.pLow * v.low);
+  check(`hilo[${i}] ×${v.high}/${v.low}`, v.pHigh * v.high + (1 - v.pHigh) * v.low);
 });
 
 // Risk slider: EV = p(r)·M(r) = TILE_RTP for every r

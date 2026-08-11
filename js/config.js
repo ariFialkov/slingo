@@ -59,11 +59,13 @@ export const TABLES = {
   double: [[2, TILE_RTP / 2]],
 };
 
-// High-Low variants: pH·H + pL·L = TILE_RTP. One variant is chosen per tile.
+// High-Low variants: strictly binary — pHigh + pLow = 1, so every bet lands on
+// one of the two options. pH·H + (1-pH)·L = TILE_RTP. A miss only exists when
+// the low option is ×0. One variant is chosen per tile.
 export const HILO_VARIANTS = [
-  { high: 3, pHigh: 0.18, low: 0.8, pLow: 0.5 },
-  { high: 4, pHigh: 0.13, low: 0.6, pLow: 0.7 },
-  { high: 10, pHigh: 0.07, low: 0.4, pLow: 0.6 },
+  { high: 1.6, pHigh: 0.4, low: 0.5 },
+  { high: 2.7, pHigh: 0.2, low: 0.5 },
+  { high: 9.4, pHigh: 0.1, low: 0 },
 ];
 
 // Risk slider: risk r∈[0,1] → multiplier M(r) = 1 + (RISK_MAX_MULT-1)·r,

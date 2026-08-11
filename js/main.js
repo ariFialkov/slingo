@@ -130,6 +130,21 @@ document.getElementById('topup').addEventListener('click', () => {
 });
 const $mute = document.getElementById('mute');
 $mute.addEventListener('click', () => { $mute.textContent = toggleMute() ? '🔇' : '🔊'; });
+document.getElementById('refresh').addEventListener('click', () => {
+  initAudio();
+  sfx.flip();
+  clearStreak(null);
+  state.cells.forEach((cell, i) => {
+    cell.respawnAt = 0;
+    schedule(i * 55, () => {
+      if (cell.flip) { cell.face = cell.flip.toFace; cell.flip = null; }
+      cell.tile = makeTile();
+      cell.result = null;
+      cell.respawnAt = 0;
+      startFlip(cell, 'front', cell.face === 'back' ? 1 : 2, 550);
+    });
+  });
+});
 updateHUD();
 
 // ---------------------------------------------------------------------------
@@ -221,25 +236,26 @@ function charge(cost) {
   return true;
 }
 
+// Returns true when the projectile was swallowed (no impact puff wanted).
 function handleHit(cell, fx, fy) {
   const tile = cell.tile;
   const res = hitTile(tile, fx, fy, state.now);
   switch (res.kind) {
     case 'none':
       sfx.miss();
-      return;
+      return false;
     case 'interact':
       if (res.startCost !== undefined) { // stepper game start
-        if (!charge(res.startCost)) { tile.active = false; tile.value = 0; return; }
+        if (!charge(res.startCost)) { tile.active = false; tile.value = 0; return false; }
       }
       sfx[res.sound] ? sfx[res.sound]() : sfx.led();
-      return;
+      return res.swallow === true;
     case 'bet':
-      if (!res.prePaid && !charge(res.cost)) return;
+      if (!res.prePaid && !charge(res.cost)) return false;
       settle(cell, res);
-      return;
+      return false;
     case 'roulette-place': {
-      if (!charge(res.cost)) return;
+      if (!charge(res.cost)) return false;
       tile.reveal = { winner: res.winner, win: res.win };
       sfx.led();
       schedule(1100, () => {
@@ -250,13 +266,14 @@ function handleHit(cell, fx, fy) {
           label: res.win ? `HIT ×${ROULETTE_MULT.toFixed(2)}` : 'WRONG BOX',
         });
       });
-      return;
+      return false;
     }
     case 'randomizer':
-      if (!charge(res.cost)) return;
+      if (!charge(res.cost)) return false;
       resolveRandomizer(cell, res);
-      return;
+      return false;
   }
+  return false;
 }
 
 function resolveRandomizer(cell, res) {
@@ -384,9 +401,12 @@ function impact(x, y, power) {
   }
   const r = Math.floor(hit.v), c = Math.floor(hit.u);
   const cell = cellAt(r, c);
-  state.effects.push({ type: 'puff', x, y, t0: state.now, dur: 400 });
-  if (cell.flip || cell.face === 'back') return; // spinning / resolved → dud
-  handleHit(cell, hit.u - c, hit.v - r);
+  if (cell.flip || cell.face === 'back') { // spinning / resolved → dud
+    state.effects.push({ type: 'puff', x, y, t0: state.now, dur: 400 });
+    return;
+  }
+  const swallowed = handleHit(cell, hit.u - c, hit.v - r);
+  if (!swallowed) state.effects.push({ type: 'puff', x, y, t0: state.now, dur: 400 });
 }
 
 // ---------------------------------------------------------------------------
@@ -591,12 +611,12 @@ function drawTileFront(tile, now) {
     case 'hilo': {
       const v = tile.variant;
       text(costLabel, 0, -16, 20, def.accent, { glow: pulse });
-      text(`▲ ×${v.high}  ${(v.pHigh * 100) | 0}%`, 0, 12, 11, '#9dffb0');
-      text(`▼ ×${v.low}  ${(v.pLow * 100) | 0}%`, 0, 30, 11, '#ffb3a0');
+      text(`▲ ×${v.high}  ${Math.round(v.pHigh * 100)}%`, 0, 12, 11, '#9dffb0');
+      text(`▼ ×${v.low}  ${Math.round((1 - v.pHigh) * 100)}%`, 0, 30, 11, '#ffb3a0');
       break;
     }
     case 'fill':
-      drawFillFront(tile, def, pulse);
+      drawFillFront(tile, def, pulse, now);
       break;
     case 'risk':
       drawRiskFront(tile, def, now, pulse);
@@ -615,25 +635,53 @@ function drawTileFront(tile, now) {
   }
 }
 
-function drawFillFront(tile, def, pulse) {
+function drawFillFront(tile, def, pulse, now) {
   // electronic counter
   rr(-26, -26, 52, 18, 3);
   ctx.fillStyle = '#0a0a12';
   ctx.fill();
   text(fmtMoney(tile.fill), 0, -17, 12, '#7dff8a', { glow: 3 });
-  // doggy-door slot (lower middle)
+  text(`+${fmtMoney(tile.increment)}/shot`, 0, 0, 9, '#fff');
+
+  // doggy-door: dark chute behind a top-hinged flap that swings open on a hit
   rr(-18, 9, 36, 36, 4);
-  ctx.fillStyle = '#140b05';
+  ctx.fillStyle = '#0a0502';
   ctx.fill();
   ctx.strokeStyle = def.accent;
   ctx.lineWidth = 2;
   ctx.stroke();
-  ctx.strokeStyle = 'rgba(255,192,125,0.5)';
-  ctx.beginPath();
-  ctx.moveTo(-18, 17); ctx.lineTo(18, 17);
+
+  const d = now - (tile.doorT || -1e9);
+  let open = 0; // 0 = closed, 1 = fully swung inward
+  if (d >= 0 && d < 480) open = d < 200 ? d / 200 : Math.max(0, 1 - (d - 200) / 280);
+
+  // ball dropping through the opening
+  if (d >= 0 && d < 260) {
+    const t = d / 260;
+    ctx.globalAlpha = 1 - t * t;
+    ctx.beginPath();
+    ctx.arc(0, 16 + 22 * t, 7 * (1 - 0.45 * t), 0, Math.PI * 2);
+    ctx.fillStyle = '#ffd65a';
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
+  // flap (foreshortens as it swings in), hinged at the top of the slot
+  const flapH = Math.max(3, 32 * (1 - 0.92 * open));
+  rr(-16, 11, 32, flapH, 3);
+  const fg = ctx.createLinearGradient(0, 11, 0, 11 + flapH);
+  fg.addColorStop(0, shade(def.color, 0.55 + 0.5 * (1 - open)));
+  fg.addColorStop(1, shade(def.color, 0.35));
+  ctx.fillStyle = fg;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,192,125,0.55)';
+  ctx.lineWidth = 1.4;
   ctx.stroke();
-  text('FEED', 0, 30, 9, def.accent, { glow: pulse * 0.5 });
-  text(`+${fmtMoney(tile.increment)}/shot`, 0, 0, 9, '#fff');
+  if (open < 0.4) {
+    ctx.globalAlpha = 1 - open / 0.4;
+    text('FEED', 0, 11 + flapH / 2, 9, def.accent, { glow: pulse * 0.5 });
+    ctx.globalAlpha = 1;
+  }
 }
 
 function drawRiskFront(tile, def, now, pulse) {
@@ -745,43 +793,81 @@ function drawLitPerimeters(now) {
 function drawSlingshot(now) {
   const pouch = pouchPos();
   const S = Math.min(W, H);
-  const forkY = sling.ay - S * 0.045;
+  const forkY = sling.ay - S * 0.05;
   const forkL = { x: sling.ax - S * 0.07, y: forkY };
   const forkR = { x: sling.ax + S * 0.07, y: forkY };
-  const baseY = Math.min(H - 8, sling.ay + S * 0.11);
-
-  // frame
+  const baseY = Math.min(H - 8, sling.ay + S * 0.1);
+  const crotchY = sling.ay + S * 0.04;
   ctx.lineCap = 'round';
-  ctx.strokeStyle = '#7a4d2a';
+
+  // launcher frame: dark alloy Y with a neon edge
+  const framePath = () => {
+    ctx.beginPath();
+    ctx.moveTo(sling.ax, baseY);
+    ctx.lineTo(sling.ax, crotchY);
+    ctx.moveTo(sling.ax, crotchY);
+    ctx.quadraticCurveTo(forkL.x, sling.ay + S * 0.008, forkL.x, forkY);
+    ctx.moveTo(sling.ax, crotchY);
+    ctx.quadraticCurveTo(forkR.x, sling.ay + S * 0.008, forkR.x, forkY);
+  };
+  ctx.strokeStyle = '#252c52';
   ctx.lineWidth = 11;
-  ctx.beginPath();
-  ctx.moveTo(sling.ax, baseY);
-  ctx.lineTo(sling.ax, sling.ay + S * 0.045);
+  framePath();
   ctx.stroke();
-  ctx.lineWidth = 9;
-  ctx.beginPath();
-  ctx.moveTo(sling.ax, sling.ay + S * 0.045);
-  ctx.quadraticCurveTo(forkL.x, sling.ay + S * 0.01, forkL.x, forkY);
-  ctx.moveTo(sling.ax, sling.ay + S * 0.045);
-  ctx.quadraticCurveTo(forkR.x, sling.ay + S * 0.01, forkR.x, forkY);
+  ctx.strokeStyle = 'rgba(110,200,255,0.85)';
+  ctx.lineWidth = 2.2;
+  ctx.shadowColor = '#40e0ff';
+  ctx.shadowBlur = 9;
+  framePath();
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // base plate
+  rr(sling.ax - S * 0.035, baseY - 4, S * 0.07, 8, 4);
+  ctx.fillStyle = '#252c52';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(110,200,255,0.5)';
+  ctx.lineWidth = 1.5;
   ctx.stroke();
 
-  // elastic bands
+  // energy bands from the emitter tips to the pouch
   const bandTo = state.loaded ? pouch : { x: sling.ax, y: sling.ay + 6 };
-  ctx.strokeStyle = '#d8c08a';
-  ctx.lineWidth = 4;
-  ctx.beginPath();
-  ctx.moveTo(forkL.x, forkY);
-  ctx.lineTo(bandTo.x - 9, bandTo.y);
-  ctx.moveTo(forkR.x, forkY);
-  ctx.lineTo(bandTo.x + 9, bandTo.y);
-  ctx.stroke();
+  for (const tip of [forkL, forkR]) {
+    const bg = ctx.createLinearGradient(tip.x, tip.y, bandTo.x, bandTo.y);
+    bg.addColorStop(0, 'rgba(64,224,255,0.95)');
+    bg.addColorStop(1, 'rgba(255,214,90,0.95)');
+    ctx.strokeStyle = bg;
+    ctx.lineWidth = 3.2;
+    ctx.shadowColor = '#7fd8ff';
+    ctx.shadowBlur = 7;
+    ctx.beginPath();
+    ctx.moveTo(tip.x, tip.y);
+    ctx.lineTo(bandTo.x + (tip === forkL ? -8 : 8), bandTo.y);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
 
-  // pouch + loaded ball
-  if (state.loaded) {
-    rr(pouch.x - 13, pouch.y - 7, 26, 15, 6);
-    ctx.fillStyle = '#4a3320';
+  // glowing emitter nodes on the fork tips
+  for (const tip of [forkL, forkR]) {
+    ctx.beginPath();
+    ctx.arc(tip.x, tip.y, 5, 0, Math.PI * 2);
+    ctx.fillStyle = '#cdf2ff';
+    ctx.shadowColor = '#40e0ff';
+    ctx.shadowBlur = 12;
     ctx.fill();
+    ctx.shadowBlur = 0;
+  }
+
+  // pouch: glowing cradle ring holding the energy ball
+  if (state.loaded) {
+    ctx.beginPath();
+    ctx.arc(pouch.x, pouch.y - 3, 13, Math.PI * 0.15, Math.PI * 0.85);
+    ctx.strokeStyle = 'rgba(120,220,255,0.9)';
+    ctx.lineWidth = 3;
+    ctx.shadowColor = '#40e0ff';
+    ctx.shadowBlur = 8;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
     drawBall(pouch.x, pouch.y - 5, 9);
   }
 
@@ -792,15 +878,37 @@ function drawSlingshot(now) {
       const to = aimTarget();
       const cxp = (pouch.x + to.x) / 2;
       const cyp = Math.min(pouch.y, to.y) - (H * 0.05 + H * 0.07 * power);
-      ctx.fillStyle = 'rgba(255,255,255,0.5)';
-      for (let i = 1; i <= 7; i++) {
-        const t = i / 8;
+      // filled trajectory (same bezier the shot flies)
+      ctx.fillStyle = 'rgba(140,225,255,0.8)';
+      const n = 14;
+      for (let i = 1; i <= n; i++) {
+        const t = i / (n + 1);
         const x = (1 - t) * (1 - t) * pouch.x + 2 * (1 - t) * t * cxp + t * t * to.x;
         const y = (1 - t) * (1 - t) * pouch.y + 2 * (1 - t) * t * cyp + t * t * to.y;
         ctx.beginPath();
-        ctx.arc(x, y, 2.6 - t, 0, Math.PI * 2);
+        ctx.arc(x, y, 2.8 - 1.4 * t, 0, Math.PI * 2);
         ctx.fill();
       }
+      // landing reticle: the exact impact point
+      const pu = 0.6 + 0.4 * Math.sin(now / 140);
+      ctx.strokeStyle = 'rgba(64,224,255,0.95)';
+      ctx.lineWidth = 2.2;
+      ctx.shadowColor = '#40e0ff';
+      ctx.shadowBlur = 10 * pu;
+      ctx.beginPath();
+      ctx.arc(to.x, to.y, 10, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.beginPath();
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        ctx.moveTo(to.x + dx * 13, to.y + dy * 13);
+        ctx.lineTo(to.x + dx * 6, to.y + dy * 6);
+      }
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+      ctx.beginPath();
+      ctx.arc(to.x, to.y, 2.6, 0, Math.PI * 2);
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
       // power arc around pouch
       ctx.beginPath();
       ctx.arc(pouch.x, pouch.y, 22, -Math.PI / 2, -Math.PI / 2 + power * Math.PI * 2);
@@ -815,10 +923,14 @@ function drawBall(x, y, radius) {
   ctx.beginPath();
   ctx.arc(x, y, radius, 0, Math.PI * 2);
   const g = ctx.createRadialGradient(x - radius / 3, y - radius / 3, radius / 5, x, y, radius);
-  g.addColorStop(0, '#ffe9a8');
-  g.addColorStop(1, '#c98f2d');
+  g.addColorStop(0, '#fff6d8');
+  g.addColorStop(0.55, '#ffd65a');
+  g.addColorStop(1, '#d09a2e');
   ctx.fillStyle = g;
+  ctx.shadowColor = '#ffd65a';
+  ctx.shadowBlur = 10;
   ctx.fill();
+  ctx.shadowBlur = 0;
 }
 
 function drawProjectile() {
