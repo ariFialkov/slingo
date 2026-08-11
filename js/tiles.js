@@ -29,16 +29,18 @@ export function randomTypeKey() {
   return weightedPick(Object.entries(TYPES).map(([k, d]) => [k, d.weight]));
 }
 
-// Create a fresh tile instance with per-type state.
-export function makeTile(typeKey = randomTypeKey()) {
+// Create a fresh tile instance with per-type state. `bet` is the general bet
+// level that scales the tile's base cost (and Fill & Deal's per-shot amount).
+export function makeTile(typeKey = randomTypeKey(), bet = 1) {
   const def = TYPES[typeKey];
-  const tile = { type: typeKey, def, cost: def.cost };
+  const tile = { type: typeKey, def, bet, cost: def.cost * bet };
   switch (typeKey) {
     case 'hilo':
       tile.variant = HILO_VARIANTS[(Math.random() * HILO_VARIANTS.length) | 0];
       break;
     case 'fill':
-      tile.increment = weightedPick(FILL_INCREMENTS);
+      tile.incBase = weightedPick(FILL_INCREMENTS);
+      tile.increment = tile.incBase * bet;
       tile.fill = 0;
       break;
     case 'risk':
@@ -59,6 +61,13 @@ export function makeTile(typeKey = randomTypeKey()) {
       break;
   }
   return tile;
+}
+
+// Re-apply a bet level to an existing (idle) tile.
+export function applyBet(tile, bet) {
+  tile.bet = bet;
+  tile.cost = tile.def.cost * bet;
+  if (tile.type === 'fill') tile.increment = tile.incBase * bet;
 }
 
 // Current risk-slider position r∈[0,1] (triangle wave).

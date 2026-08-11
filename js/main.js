@@ -2,9 +2,10 @@
 import {
   TYPES, BONUS, GRID, START_BALANCE, TOPUP_AMOUNT, RESPAWN_DELAY_MS,
   RISK_MAX_MULT, ROULETTE_MULT, stepperStepProb, fmtMoney, TILE_RTP,
+  CHIP_BETS,
 } from './config.js';
 import {
-  makeTile, hitTile, riskPosition, instantOutcome, rouletteCubeRect,
+  makeTile, applyBet, hitTile, riskPosition, instantOutcome, rouletteCubeRect,
   tileCostLabel,
 } from './tiles.js';
 import { initAudio, sfx, toggleMute, isMuted } from './audio.js';
@@ -31,9 +32,9 @@ function layout() {
   // Board fills the screen in at least one dimension, leaving a small strip
   // at the bottom for the slingshot.
   const availTop = H * 0.075;
-  const availH = H * 0.8 - availTop;
+  const availH = H * 0.79 - availTop;
   const bw = Math.min(W * 0.97, availH * 1.05);
-  const bh = Math.min(availH, bw * 1.25); // cap tile stretch
+  const bh = Math.min(availH, bw * 1.06); // keep tiles near-square (no stretch)
   board.top = availTop + (availH - bh) / 2; // centre in the available area
   board.bottom = board.top + bh;
   board.cx = W / 2;
@@ -41,8 +42,8 @@ function layout() {
   board.wTop = bw * 0.87;
 
   sling.ax = W / 2;
-  sling.ay = H * 0.895;
-  sling.maxPull = Math.min(Math.min(W, H) * 0.22, (H - sling.ay) * 1.8);
+  sling.ay = H * 0.865;
+  sling.maxPull = Math.min(Math.min(W, H) * 0.22, (H - sling.ay) * 1.6);
 }
 window.addEventListener('resize', layout);
 layout();
@@ -71,6 +72,8 @@ function tileRect(r, c) {
 const state = {
   balance: START_BALANCE,
   lastWin: 0,
+  betLevel: 1,
+  shuffle: false, // random chip bet per tile instead of a flat level
   cells: [],
   litCells: new Set(),
   streak: { cells: [], dir: null },
@@ -84,11 +87,16 @@ const state = {
   now: performance.now(),
 };
 
+function currentBet() {
+  return state.shuffle ? CHIP_BETS[(Math.random() * CHIP_BETS.length) | 0] : state.betLevel;
+}
+const newTile = () => makeTile(undefined, currentBet());
+
 for (let r = 0; r < GRID; r++) {
   for (let c = 0; c < GRID; c++) {
     state.cells.push({
       r, c,
-      tile: makeTile(),
+      tile: newTile(),
       face: 'front',
       flip: null,       // {start, dur, halfTurns, fromFace, toFace}
       result: null,     // {label, prize, win}
@@ -123,13 +131,45 @@ function toast(msg) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => $toast.classList.remove('show'), 1800);
 }
-document.getElementById('topup').addEventListener('click', () => {
+const $topup = document.getElementById('topup');
+$topup.textContent = '+' + fmtMoney(TOPUP_AMOUNT);
+$topup.addEventListener('click', () => {
   state.balance += TOPUP_AMOUNT;
   toast(`+${fmtMoney(TOPUP_AMOUNT)} added`);
   updateHUD();
 });
 const $mute = document.getElementById('mute');
 $mute.addEventListener('click', () => { $mute.textContent = toggleMute() ? '🔇' : '🔊'; });
+// Bet slider + shuffle toggle
+const $betslider = document.getElementById('betslider');
+const $betlabel = document.getElementById('betlabel');
+const $shuffle = document.getElementById('shuffle');
+
+function applyBetToBoard() {
+  for (const cell of state.cells) {
+    if (cell.face !== 'front' || cell.flip || cell.respawnAt || tileBusy(cell.tile)) continue;
+    applyBet(cell.tile, currentBet());
+  }
+}
+function updateBetUI() {
+  $betlabel.textContent = state.shuffle ? 'BET $1–$100' : 'BET ' + fmtMoney(state.betLevel);
+  $shuffle.classList.toggle('on', state.shuffle);
+  $betslider.disabled = state.shuffle;
+}
+$betslider.addEventListener('input', () => {
+  state.betLevel = +$betslider.value;
+  if (!state.shuffle) applyBetToBoard();
+  updateBetUI();
+});
+$shuffle.addEventListener('click', () => {
+  initAudio();
+  state.shuffle = !state.shuffle;
+  applyBetToBoard(); // re-roll (or flatten) every idle tile's bet
+  updateBetUI();
+  sfx.led();
+});
+updateBetUI();
+
 document.getElementById('refresh').addEventListener('click', () => {
   initAudio();
   sfx.flip();
@@ -138,7 +178,7 @@ document.getElementById('refresh').addEventListener('click', () => {
     cell.respawnAt = 0;
     schedule(i * 55, () => {
       if (cell.flip) { cell.face = cell.flip.toFace; cell.flip = null; }
-      cell.tile = makeTile();
+      cell.tile = newTile();
       cell.result = null;
       cell.respawnAt = 0;
       startFlip(cell, 'front', cell.face === 'back' ? 1 : 2, 550);
@@ -443,7 +483,7 @@ function update() {
       cell.flip = null;
     }
     if (cell.respawnAt && now >= cell.respawnAt && !cell.flip) {
-      cell.tile = makeTile();
+      cell.tile = newTile();
       cell.result = null;
       cell.respawnAt = 0;
       startFlip(cell, 'front', 1, 500);

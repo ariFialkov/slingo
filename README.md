@@ -28,6 +28,12 @@ While aiming, a filled trajectory line and a glowing reticle mark the exact
 landing point of the shot. The ⟳ button on the right edge refreshes the whole
 board with fresh tiles.
 
+The bet bar under the slingshot controls the general bet level ($1–$100): every
+tile's base cost scales with it (e.g. Stepper $2 → $200 at level 100, Roulette
+$0.50/sq → $50/sq, Fill & Deal per-shot amounts likewise). The 🎲 toggle
+switches to shuffle mode, where each tile instead draws a random chip bet
+($1/$2/$5/$10/$25/$50/$100) so the board mixes stakes.
+
 The game opens straight into play with the slingshot primed and a ball loaded.
 Hitting a tile places an isolated bet at the cost shown on its face; the tile spins
 around its central vertical pivot before settling on its back side, which shows the
@@ -40,7 +46,7 @@ question-mark watermark, a type-distinct background color, and its glowing cost.
 
 | Type | Behaviour |
 | --- | --- |
-| **Standard** | Normal prize table (×0.5 up to ×25). |
+| **Standard** | Normal prize table (×0.5 up to ×10), mid-weighted: ~65% hit rate, 35% losses. |
 | **Safe** | 75% hit rate, mostly ×0.5–×2, rare ×5/×8. |
 | **Wild** | ~5% hit rate, ×10 up to ×100. |
 | **Jackpot** | Almost always loses or returns small; 0.17% chance of a fixed ×500. |

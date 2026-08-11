@@ -28,6 +28,11 @@
     </div>
   </div>
   <button id="refresh" class="btn" type="button" title="Refresh board">⟳</button>
+  <div id="betbar">
+    <span id="betlabel" class="pill">BET $1</span>
+    <input id="betslider" type="range" min="1" max="100" step="1" value="1" aria-label="Bet amount" />
+    <button id="shuffle" class="pill btn" type="button" title="Random bet per tile">🎲</button>
+  </div>
   <div id="toast"></div>
   <script type="module" src="js/main.js"></script>
   <script>

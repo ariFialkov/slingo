@@ -8,8 +8,14 @@
 export const TARGET_RTP = 0.96;
 export const TILE_RTP = 0.94; // per-bet EV; ~2% headroom funds pattern bonuses
 
-export const START_BALANCE = 200;
-export const TOPUP_AMOUNT = 100;
+export const START_BALANCE = 1000;
+export const TOPUP_AMOUNT = 500;
+
+// General bet controls: the slider sets a flat bet level applied to every
+// tile's base cost; shuffle mode instead gives each tile a random chip level.
+export const BET_MIN = 1;
+export const BET_MAX = 100;
+export const CHIP_BETS = [1, 2, 5, 10, 25, 50, 100];
 
 // Board is GRID × GRID.
 export const GRID = 3;
@@ -24,14 +30,15 @@ export const BONUS = {
 // Prize tables: [multiplier, probability]. Remaining probability = lose (×0).
 // Each table's Σ m·p must equal TILE_RTP (verified by tools/verify-rtp.js).
 export const TABLES = {
-  // Normal prize spread.
+  // Normal prize spread. Deliberately mid-weighted (64.8% hit rate, only 35%
+  // total losses) so it doesn't feel tail-heavy like wild/jackpot.
   standard: [
-    [0.5, 0.24],
-    [1, 0.16],
-    [2, 0.1],
-    [5, 0.045],
-    [10, 0.016],
-    [25, 0.003],
+    [0.5, 0.2],
+    [1, 0.22],
+    [2, 0.14],
+    [3, 0.06],
+    [5, 0.024],
+    [10, 0.004],
   ],
   // High hit rate (75.5% overall, 70% in the 0.5–2× band), small wins.
   safe: [
