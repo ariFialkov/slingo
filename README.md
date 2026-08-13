@@ -97,6 +97,6 @@ js/tiles.js           tile creation, outcome rolls, per-type hit logic
 js/main.js            board geometry, slingshot, projectile, rendering, bonuses
 js/audio.js           tiny WebAudio synth (no assets)
 sw.js                 service worker (offline cache)
-manifest.webmanifest  PWA manifest
+manifest.json         PWA manifest
 tools/                icon generator + RTP verifier
 ```

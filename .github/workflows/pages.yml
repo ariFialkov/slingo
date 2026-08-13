@@ -1,8 +1,8 @@
 name: Deploy to GitHub Pages
 
-# Publishes the site to the gh-pages branch, which GitHub Pages serves.
-# (The Pages REST API isn't accessible to the workflow token on this repo,
-# so we use branch-based deployment instead of actions/deploy-pages.)
+# Publishes build.sh's dist/ output to the gh-pages branch, which GitHub Pages
+# serves. (The Pages REST API isn't accessible to the workflow token on this
+# repo, so we use branch-based deployment instead of actions/deploy-pages.)
 
 on:
   push:
@@ -21,14 +21,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Publish to gh-pages
+      - name: Build site
+        run: ./build.sh
+      - name: Publish dist/ to gh-pages
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          cd dist
+          touch .nojekyll
+          git init -q -b gh-pages
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout --orphan gh-pages
-          git rm -rf --cached . -q
-          rm -rf .github
-          touch .nojekyll
           git add -A
           git commit -q -m "Deploy ${GITHUB_SHA::7} to GitHub Pages"
-          git push -f origin gh-pages
+          git push -f "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
