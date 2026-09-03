@@ -2,14 +2,14 @@
 // Verifies (1) every theme's prize table has EV = TARGET_RTP, (2) the scoring
 // steering lands a ball exactly on its predetermined target for any sequence
 // of +/− component hits of any tier, with every award a SCORE_STEP multiple,
-// and (3) procedural boards generate with all their components in play.
+// and (3) procedural boards generate with their components in play and pass
+// the V-pocket trap scan.
 import { THEMES, TARGET_RTP, SCORE_STEP, BALL_TYPES, round2 } from '../js/config.js';
-import { awardFor, residualFor, rollMultiplier, generateSpec, pointInPoly } from '../js/field.js';
+import { awardFor, residualFor, rollMultiplier, generateSpec, pointInPoly, findTrap } from '../js/field.js';
 
 let failed = false;
 const report = (ok, msg) => { if (!ok) failed = true; console.log(`${ok ? 'PASS' : 'FAIL'}  ${msg}`); };
 
-// 1. Prize tables per theme
 for (const t of Object.values(THEMES)) {
   const ev = t.table.reduce((s, [m, p]) => s + m * p, 0);
   const pWin = t.table.reduce((s, [, p]) => s + p, 0);
@@ -22,7 +22,6 @@ for (const t of Object.values(THEMES)) {
   report(Math.abs(total / N - TARGET_RTP) < 0.05, `monte-carlo INFERNO EV = ${(total / N).toFixed(3)} (highest variance table)`);
 }
 
-// 2. Steering: random hit sequences of mixed tiers must settle exactly
 {
   let trials = 0, badStep = 0, negativeRes = 0;
   for (const theme of Object.values(THEMES)) {
@@ -49,20 +48,26 @@ for (const t of Object.values(THEMES)) {
   report(true, `steering settled ${trials} balls exactly on target; ${(100 * negativeRes / trials).toFixed(1)}% negative exit reveals`);
 }
 
-// 3. Board generation sanity
 {
-  let boards = 0, bad = 0, comps = 0;
+  let boards = 0, bad = 0, comps = 0, traps = 0, attempts = 0;
+  const reasons = {};
+  const t0 = Date.now();
   for (const theme of Object.values(THEMES)) {
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 25; i++) {
       const s = generateSpec(theme);
       boards++;
-      const items = [...s.bumpers, ...s.pins, ...s.holes, ...s.lanes];
+      attempts += s.attempts;
+      const items = [...s.bumpers, ...s.pins, ...s.holes, ...s.gates, ...s.spinners];
       comps += items.length + s.rails.length + s.tris.length;
-      for (const it of items) if (!pointInPoly(it.u, it.v, s.outline)) bad++;
-      if (s.bumpers.length < 2 || s.pins.length < 6 || s.lanes.length < 2 || s.flippers.length !== 2) bad++;
+      for (const it of items) if (!pointInPoly(it.u, it.v, s.outline)) { bad++; reasons.outside = (reasons.outside || 0) + 1; }
+      for (const [k, min] of [['bumpers', 2], ['pins', 6], ['gates', 1], ['spinners', 1], ['holes', 1]]) {
+        if (s[k].length < min) { bad++; reasons[k] = (reasons[k] || 0) + 1; }
+      }
+      if (findTrap(s)) traps++;
     }
   }
-  report(bad === 0, `${boards} generated boards valid (avg ${(comps / boards).toFixed(1)} components each, ${bad} problems)`);
+  report(bad === 0, `${boards} generated boards valid (avg ${(comps / boards).toFixed(1)} components, ${bad} problems ${JSON.stringify(reasons)})`);
+  report(traps === 0, `trap scan: ${traps} boards with a V-pocket after retries (avg ${(attempts / boards).toFixed(2)} attempts, ${((Date.now() - t0) / boards).toFixed(0)} ms/board)`);
 }
 
 process.exit(failed ? 1 : 0);

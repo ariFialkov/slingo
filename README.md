@@ -37,9 +37,13 @@ standalone app (works offline after first load). `./build.sh` produces a clean
 ## The board formula
 
 Each board is generated from a recipe: an asymmetric chamfered cabinet outline
-with a side notch, an orbit rail on the opposite side, two to four rollover
-lanes under the top edge, then components placed by rejection sampling inside
-the polygon (min-distance from walls and each other, exit approach kept clear):
+with a side notch, an orbit rail on the opposite side and an optional swoosh
+ramp (both kept well clear of the walls), then components placed by rejection
+sampling inside the polygon with clearances of more than a ball diameter. A
+**trap scan** then checks every resting position a ball could occupy for a
+V-shaped pocket (two supports pushing up from opposite sides at distinct
+contact points) and regenerates the board if one exists — so there are no dead
+ends by construction, not just by tuning.
 
 | Component | Indicator | What it does |
 | --- | --- | --- |
@@ -50,7 +54,8 @@ the polygon (min-distance from walls and each other, exit approach kept clear):
 | **Signed rails** | `++` / `−−` | Slanted neon pieces hugging the side walls. |
 | **Kicker pins** | `+` / `−` | Small tinted pegs; nibble at the gap. |
 | **Plain pins**, guides, orbit rail | — | Pure deflectors. |
-| **Rollover lanes** | `+` | Dashed gates under the top edge; crossing downward adds. |
+| **Gates** | `+` | Short channels scattered across the field. Passing through scores, then: **BOOST** (green chevrons) fires the ball on along the channel, **SLOW** (blue bars) brakes it, **WARP A/B** (magenta) teleports it out of its twin. |
+| **Spinners** | `+ SPIN` | A paddle on an axle between two posts. A ball passing through spins it (and loses some speed); every revolution scores for that ball, up to five. |
 | **Holes / baskets** | `?` | Swallow the ball and settle the bet. |
 | **Auto-flippers** | pips under the ball | React automatically when a ball drops onto them, with 1–3 charges per ball depending on the theme; once spent, the ball drains. |
 | **EXIT** | `?` | The well between the flippers; settles the bet. |

@@ -251,6 +251,7 @@ function spawnBall(f) {
     type: f.type, stake: f.stake, mult: f.mult, target: round2(f.mult * f.stake), total: 0,
     born: state.now, cd: new Map(), slowSince: 0, dying: null, hits: 0, flips: f.flips,
     lastComp: null, repeat: 0, overshoots: 0, ax: f.x1, ay: f.y1, at: state.now,
+    sides: new Map(), gcd: new Map(),
   });
   sfx.hit();
   state.effects.push({ type: 'puff', x: f.x1, y: f.y1, t0: state.now, dur: 350 });
@@ -264,7 +265,9 @@ function award(ball, comp, sign, tier, x, y) {
   if (state.now < until) return;
   ball.cd.set(comp, state.now + 160);
   comp.flashT = state.now;
-  if (comp === ball.lastComp) ball.repeat++; else { ball.lastComp = comp; ball.repeat = 0; }
+  if (!comp.posts) { // spinners legitimately award repeatedly while they spin
+    if (comp === ball.lastComp) ball.repeat++; else { ball.lastComp = comp; ball.repeat = 0; }
+  }
   if (ball.repeat >= 3 || state.now - ball.born > PHYS.softLifeMs) {
     ball.vx += (Math.random() - 0.5) * 0.6 * board.h;
     ball.vy -= 0.25 * board.h;
@@ -351,6 +354,8 @@ function integrate(b, h) {
   b.y += b.vy * h;
 
   for (const s of F.walls) collideSegment(b, s, PHYS.restitutionWall);
+  for (const g of F.gates) for (const gd of g.guides) collideSegment(b, gd, PHYS.restitutionWall);
+  for (const sp of F.spinners) for (const post of sp.posts) collideCircle(b, post, PHYS.restitutionPin, 0);
   for (const s of F.rails) {
     if (collideSegment(b, s, PHYS.restitutionWall)) award(b, s, s.sign, s.tier, (s.a.x + s.b.x) / 2, (s.a.y + s.b.y) / 2 - 14);
   }
@@ -468,11 +473,83 @@ function ballPairs() {
   }
 }
 
+// Which side of a sensor line the ball is on, and whether it's within its span.
+function sideOf(b, s) { return Math.sign((s.b.x - s.a.x) * (b.y - s.a.y) - (s.b.y - s.a.y) * (b.x - s.a.x)); }
+function withinSpan(b, s) {
+  const abx = s.b.x - s.a.x, aby = s.b.y - s.a.y;
+  const t = ((b.x - s.a.x) * abx + (b.y - s.a.y) * aby) / (abx * abx + aby * aby || 1e-9);
+  return t >= 0 && t <= 1;
+}
+function crossed(b, comp, sensor, cooldown) {
+  const side = sideOf(b, sensor);
+  const prev = b.sides.get(comp);
+  b.sides.set(comp, side);
+  if (prev === undefined || prev === side || side === 0 || !withinSpan(b, sensor)) return false;
+  if (state.now < (b.gcd.get(comp) || 0)) return false;
+  b.gcd.set(comp, state.now + cooldown);
+  return true;
+}
+
+// Gates: score, then boost / brake / warp the ball.
+function gateCross(b, g) {
+  if (!crossed(b, g, g.sensor, 500)) return;
+  award(b, g, g.sign, g.tier, g.x - g.ax * (g.L + 12), g.y - g.ay * (g.L + 12));
+  const sp = Math.hypot(b.vx, b.vy);
+  let ax = g.ax, ay = g.ay;
+  if (b.vx * ax + b.vy * ay < 0) { ax = -ax; ay = -ay; } // follow the ball's direction
+  if (g.kind === 'boost') {
+    const s = Math.max(sp * 1.6, 0.9 * board.h);
+    b.vx = ax * s; b.vy = ay * s;
+    sfx.fire(0.6);
+  } else if (g.kind === 'brake') {
+    b.vx = ax * sp * 0.35; b.vy = ay * sp * 0.35;
+    sfx.miss();
+  } else if (g.kind === 'warp' && g.twin !== undefined) {
+    const t = board.gates[g.twin];
+    state.effects.push({ type: 'puff', x: b.x, y: b.y, t0: state.now, dur: 400 });
+    b.x = t.x + t.ax * (t.L + b.r * 2);
+    b.y = t.y + t.ay * (t.L + b.r * 2);
+    const s = Math.max(sp * 0.8, 0.4 * board.h);
+    b.vx = t.ax * s; b.vy = t.ay * s;
+    b.sides.set(t, sideOf(b, t.sensor));
+    b.gcd.set(t, state.now + 600);
+    t.flashT = state.now;
+    b.ax = b.x; b.ay = b.y; b.at = state.now;
+    state.effects.push({ type: 'puff', x: b.x, y: b.y, t0: state.now, dur: 400 });
+    sfx.flip();
+  }
+}
+
+// Spinners: the ball spins the paddle (and loses some speed); each revolution scores.
+function spinnerCross(b, sp) {
+  if (!crossed(b, sp, sp.sensor, 300)) return;
+  const speed = Math.hypot(b.vx, b.vy);
+  sp.omega = Math.max(10, Math.min(45, (speed / board.h) * 28)) * (sideOf(b, sp.sensor) > 0 ? 1 : -1);
+  sp.owner = b; sp.revs = 0; sp.flashT = state.now;
+  b.vx *= 0.72; b.vy *= 0.72;
+  const jit = (Math.random() - 0.5) * 0.25, c = Math.cos(jit), s = Math.sin(jit);
+  const vx = b.vx * c - b.vy * s, vy = b.vx * s + b.vy * c;
+  b.vx = vx; b.vy = vy;
+  sfx.led();
+}
+function updateSpinners(dt) {
+  for (const sp of board.spinners) {
+    if (Math.abs(sp.omega) < 0.3) { sp.omega = 0; continue; }
+    const before = sp.rot;
+    sp.rot += sp.omega * dt;
+    sp.omega *= Math.exp(-1.4 * dt);
+    if (Math.floor(before / (2 * Math.PI)) !== Math.floor(sp.rot / (2 * Math.PI)) && sp.revs < 5) {
+      sp.revs++;
+      const o = sp.owner;
+      if (o && !o.dying && state.balls.includes(o)) { o.cd.delete(sp); award(o, sp, sp.sign, sp.tier, sp.x, sp.y - 20); }
+    }
+  }
+}
+
 function checkSensors(b) {
   const F = board;
-  for (const l of F.lanes) {
-    if (b.prevY < l.y && b.y >= l.y && Math.abs(b.x - l.x) < l.halfW) award(b, l, l.sign, l.tier, l.x, l.y - 12);
-  }
+  for (const g of F.gates) gateCross(b, g);
+  for (const sp of F.spinners) spinnerCross(b, sp);
   for (const hole of F.holes) {
     if (Math.hypot(b.x - hole.x, b.y - hole.y) < hole.r * 0.62) { settle(b, hole.x, hole.y, hole); return; }
   }
@@ -512,6 +589,7 @@ function update() {
   if (!state.loaded && now >= state.reloadAt) state.loaded = true;
   const hadBalls = state.balls.length;
   stepPhysics(dt);
+  updateSpinners(dt);
   if (state.balls.length !== hadBalls) {
     updateHUD();
     if (fieldEmpty() && state.launched >= BOARD_BALLS && !state.boardPending) {
@@ -530,6 +608,7 @@ const easeInOut = (t) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2)
 const flash = (comp, dur = 350) => (comp.flashT ? Math.max(0, 1 - (state.now - comp.flashT) / dur) : 0);
 const SIGN_COL = (s) => (s > 0 ? '#39d97a' : '#e0455a');
 const SIGN_DARK = (s) => (s > 0 ? '#12532c' : '#5a1520');
+const GATE_COL = { boost: '#7dffb9', brake: '#7fd8ff', warp: '#ff5ed2' };
 
 function rr(c, x, y, w, h, r) {
   c.beginPath();
@@ -770,14 +849,41 @@ function buildStatic() {
     text(c, '?', hole.x, hole.y + (hole.kind === 'basket' ? 2 : 1), hole.r * 1.1, 'rgba(255,255,255,0.5)');
   }
 
-  // --- rollover lanes: recessed channel + sensor ------------------------------
-  for (const l of F.lanes) {
-    const guideTop = l.y - F.h * 0.075, guideBot = l.y + F.h * 0.025;
-    rr(c, l.x - l.halfW - 2, guideTop, (l.halfW + 2) * 2, guideBot - guideTop, 3);
-    c.fillStyle = 'rgba(0,0,0,0.35)'; c.fill();
-    c.setLineDash([4, 4]); c.strokeStyle = 'rgba(125,255,185,0.45)'; c.lineWidth = 1.5;
-    c.beginPath(); c.moveTo(l.x - l.halfW, l.y); c.lineTo(l.x + l.halfW, l.y); c.stroke(); c.setLineDash([]);
-    text(c, tierLabel(l.sign, l.tier), l.x, l.y - 11, 11, '#7dffb9', { emboss: true });
+  // --- gates: recessed channel between two guide tubes, kind icon, sensor -------
+  for (const g of F.gates) {
+    const col = GATE_COL[g.kind];
+    c.save(); c.translate(g.x, g.y); c.rotate(-g.angle);
+    rr(c, -g.G + 3, -g.L, (g.G - 3) * 2, g.L * 2, 4);
+    const cg = c.createLinearGradient(-g.G, 0, g.G, 0); cg.addColorStop(0, 'rgba(0,0,0,0.55)'); cg.addColorStop(0.5, 'rgba(0,0,0,0.25)'); cg.addColorStop(1, 'rgba(0,0,0,0.55)');
+    c.fillStyle = cg; c.fill();
+    c.strokeStyle = col; c.lineWidth = 1.6; c.globalAlpha = 0.8; c.lineCap = 'round';
+    if (g.kind === 'boost') {
+      for (let k = -1; k <= 1; k++) { c.beginPath(); c.moveTo(-6, k * 11 - 4); c.lineTo(0, k * 11 + 2); c.lineTo(6, k * 11 - 4); c.stroke(); }
+    } else if (g.kind === 'brake') {
+      for (let k = -1; k <= 1; k++) { c.beginPath(); c.moveTo(-6, k * 9); c.lineTo(6, k * 9); c.stroke(); }
+    } else {
+      c.beginPath(); c.moveTo(0, -9); c.lineTo(7, 0); c.lineTo(0, 9); c.lineTo(-7, 0); c.closePath(); c.stroke();
+      c.beginPath(); c.arc(0, 0, 3, 0, Math.PI * 2); c.fillStyle = col; c.fill();
+    }
+    c.globalAlpha = 1;
+    c.restore();
+    for (const gd of g.guides) tube(c, () => { c.beginPath(); c.moveTo(gd.a.x, gd.a.y); c.lineTo(gd.b.x, gd.b.y); }, T.secondary, 2.5, 6);
+    for (const gd of g.guides) { post(c, gd.a.x, gd.a.y, 3.2, '#dfe7ff', 0); post(c, gd.b.x, gd.b.y, 3.2, '#dfe7ff', 0); }
+    c.setLineDash([3, 3]); c.strokeStyle = col; c.globalAlpha = 0.7; c.lineWidth = 1.5;
+    c.beginPath(); c.moveTo(g.sensor.a.x, g.sensor.a.y); c.lineTo(g.sensor.b.x, g.sensor.b.y); c.stroke(); c.setLineDash([]); c.globalAlpha = 1;
+    text(c, tierLabel(g.sign, g.tier), g.x - g.ax * (g.L + 11), g.y - g.ay * (g.L + 11), 11, '#7dffb9', { emboss: true });
+    const name = g.kind === 'warp' ? `WARP ${g.i < g.twin ? 'A' : 'B'}` : g.kind === 'boost' ? 'BOOST' : 'SLOW';
+    text(c, name, g.x + g.ax * (g.L + 10), g.y + g.ay * (g.L + 10), 7, col, { spacing: '1px', emboss: true });
+  }
+  // --- spinners: axle housing between two posts (paddle drawn dynamically) ----
+  for (const sp of F.spinners) {
+    c.save(); c.translate(sp.x, sp.y); c.rotate(sp.angle);
+    rr(c, -sp.hw, -7, sp.hw * 2, 14, 3); c.fillStyle = 'rgba(0,0,0,0.4)'; c.fill();
+    c.strokeStyle = 'rgba(255,255,255,0.12)'; c.lineWidth = 1; c.stroke();
+    c.beginPath(); c.moveTo(-sp.hw, 0); c.lineTo(sp.hw, 0); c.strokeStyle = '#6d7aa6'; c.lineWidth = 2; c.stroke();
+    c.restore();
+    for (const p of sp.posts) post(c, p.x, p.y, p.r, '#dfe7ff', 0);
+    text(c, '+ SPIN', sp.x, sp.y - 16, 8, '#7dffb9', { spacing: '1px', emboss: true });
   }
 
   // --- walls: outline tube, guides, tapered curves -----------------------------
@@ -905,12 +1011,31 @@ function drawDynamic(T, now) {
     ctx.beginPath(); ctx.arc(hole.x, hole.y, hole.r * (1 + 0.5 * (1 - f)), 0, Math.PI * 2);
     ctx.strokeStyle = `rgba(255,214,90,${f})`; ctx.lineWidth = 3; ctx.shadowColor = '#ffd65a'; ctx.shadowBlur = 16 * f; ctx.stroke(); ctx.shadowBlur = 0;
   }
-  // lanes lit
-  for (const l of F.lanes) {
-    const f = flash(l, 500);
+  // gates lit
+  for (const g of F.gates) {
+    const f = flash(g, 600);
     if (!f) continue;
-    ctx.strokeStyle = `rgba(125,255,185,${f})`; ctx.lineWidth = 3; ctx.shadowColor = '#7dffb9'; ctx.shadowBlur = 14 * f;
-    ctx.beginPath(); ctx.moveTo(l.x - l.halfW, l.y); ctx.lineTo(l.x + l.halfW, l.y); ctx.stroke(); ctx.shadowBlur = 0;
+    const col = GATE_COL[g.kind];
+    ctx.save(); ctx.translate(g.x, g.y); ctx.rotate(-g.angle);
+    rr(ctx, -g.G + 3, -g.L, (g.G - 3) * 2, g.L * 2, 4);
+    ctx.fillStyle = col; ctx.globalAlpha = 0.45 * f; ctx.shadowColor = col; ctx.shadowBlur = 20 * f; ctx.fill();
+    ctx.restore(); ctx.globalAlpha = 1; ctx.shadowBlur = 0;
+  }
+  // spinner paddles (rotate about the axle; foreshortened by cos)
+  for (const sp of F.spinners) {
+    const spinning = sp.omega !== 0;
+    const thick = 2.5 + 6 * Math.abs(Math.cos(sp.rot));
+    const facing = Math.cos(sp.rot) >= 0;
+    ctx.save(); ctx.translate(sp.x, sp.y); ctx.rotate(sp.angle);
+    ctx.save(); ctx.translate(2, 3); rr(ctx, -sp.hw * 0.82, -thick / 2, sp.hw * 1.64, thick, 2); ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fill(); ctx.restore();
+    rr(ctx, -sp.hw * 0.82, -thick / 2, sp.hw * 1.64, thick, 2);
+    const pg = ctx.createLinearGradient(0, -thick / 2, 0, thick / 2);
+    pg.addColorStop(0, facing ? '#e8f0ff' : '#7dffb9'); pg.addColorStop(1, facing ? '#5a6690' : '#1d8a4a');
+    ctx.fillStyle = pg;
+    if (spinning) { ctx.shadowColor = '#7dffb9'; ctx.shadowBlur = 12; }
+    ctx.fill(); ctx.shadowBlur = 0;
+    ctx.strokeStyle = spinning ? '#7dffb9' : 'rgba(255,255,255,0.4)'; ctx.lineWidth = 1; ctx.stroke();
+    ctx.restore();
   }
   // rails / tris / pins flash
   for (const s of F.rails) {
