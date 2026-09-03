@@ -125,26 +125,52 @@ export function generateSpec(theme = pickTheme()) {
   for (let i = 0; i <= nLanes; i++) spec.walls.push({ a: [laneU0 + i * laneW, gTop], b: [laneU0 + i * laneW, gBot], cap: true });
   for (let i = 0; i < nLanes; i++) spec.lanes.push({ u: laneU0 + (i + 0.5) * laneW, v: gBot - 0.025, halfW: laneW * 0.42, sign: +1, tier: 1 });
 
-  // --- one-sided orbit rail (partial ring) ---------------------------------
+  // --- one-sided orbit rail (partial ring, opening facing down) -------------
+  // The arc always passes over the top so its opening faces down: a ball can
+  // never settle inside it. Mirrored for the left side.
   const orbitRight = notchLeft; // orbit on the side opposite the notch
   const ocu = orbitRight ? rand(0.6, 0.7) : rand(0.3, 0.4), ocv = rand(0.3, 0.42), orr = rand(0.17, 0.23);
-  const a0 = orbitRight ? -Math.PI * 0.95 : -Math.PI * 0.05, a1 = orbitRight ? Math.PI * 0.35 : Math.PI * 0.65;
+  const a0 = orbitRight ? -Math.PI * 0.95 : Math.PI * 0.65, a1 = orbitRight ? Math.PI * 0.35 : Math.PI * 1.95;
   const ring = [];
-  for (let i = 0; i <= 14; i++) {
-    const a = a0 + ((a1 - a0) * i) / 14;
+  for (let i = 0; i <= 30; i++) {
+    const a = a0 + ((a1 - a0) * i) / 30;
     const u = ocu + orr * Math.cos(a), v = ocv + orr * Math.sin(a);
     ring.push(inside(u, v, 0.035) && v > gBot + 0.02 ? [u, v] : null);
   }
-  for (let i = 0; i < ring.length - 1; i++) if (ring[i] && ring[i + 1]) spec.walls.push({ a: ring[i], b: ring[i + 1], neon: true, orbit: true });
-  spec.orbit = { u: ocu, v: ocv, r: orr };
+  const orbitPts = [];
+  for (let i = 0; i < ring.length - 1; i++) {
+    if (ring[i] && ring[i + 1]) { spec.walls.push({ a: ring[i], b: ring[i + 1], curve: 'orbit' }); orbitPts.push(ring[i], ring[i + 1]); }
+  }
+  spec.orbit = { u: ocu, v: ocv, r: orr, pts: orbitPts.filter((p, i) => i === 0 || p !== orbitPts[i - 1]) };
+
+  // --- tapered swoosh ramp on the notch side (C-curve opening to centre) ----
+  // Lowest point is its bottom end, so balls always run off it.
+  if (coin(0.65)) {
+    const left = notchLeft;
+    const sx = left ? 0.05 : 0.95, bulge = left ? rand(0.2, 0.28) : 1 - rand(0.2, 0.28);
+    const v0 = rand(0.22, 0.3), v1 = rand(0.62, 0.74);
+    const p0 = [sx, v0], pc = [bulge, (v0 + v1) / 2], p1 = [sx, v1];
+    const sw = [];
+    for (let i = 0; i <= 22; i++) {
+      const t = i / 22;
+      const u = (1 - t) * (1 - t) * p0[0] + 2 * (1 - t) * t * pc[0] + t * t * p1[0];
+      const v = (1 - t) * (1 - t) * p0[1] + 2 * (1 - t) * t * pc[1] + t * t * p1[1];
+      sw.push(inside(u, v, 0.03) ? [u, v] : null);
+    }
+    const swPts = [];
+    for (let i = 0; i < sw.length - 1; i++) if (sw[i] && sw[i + 1]) { spec.walls.push({ a: sw[i], b: sw[i + 1], curve: 'swoosh' }); swPts.push(sw[i], sw[i + 1]); }
+    spec.swoosh = { pts: swPts.filter((p, i) => i === 0 || p !== swPts[i - 1]) };
+  }
 
   // --- component placement with collision avoidance -----------------------
+  // Clearances are ≥ a ball diameter (0.034) + margin so a ball can never wedge
+  // between two components or between a component and a wall.
   const placed = []; // {u,v,r}
   const wallsFor = () => spec.walls.map((w) => [w.a, w.b]);
   const clearOf = (u, v, r) =>
-    inside(u, v, r + 0.02) &&
-    wallsFor().every(([a, b]) => segDist(u, v, a, b) >= r + 0.02) &&
-    placed.every((p) => Math.hypot(u - p.u, v - p.v) >= r + p.r + 0.03) &&
+    inside(u, v, r + 0.045) &&
+    wallsFor().every(([a, b]) => segDist(u, v, a, b) >= r + 0.045) &&
+    placed.every((p) => Math.hypot(u - p.u, v - p.v) >= r + p.r + 0.06) &&
     !(v > 0.8 && u > 0.3 && u < 0.7); // keep the exit approach clear
   const place = (r, vmin, vmax, umin = 0.08, umax = 0.92) => {
     for (let k = 0; k < 80; k++) {
@@ -167,17 +193,18 @@ export function generateSpec(theme = pickTheme()) {
     const p = place(r, 0.26, 0.74);
     if (p) spec.bumpers.push({ u: p.u, v: p.v, r, sign: +1, tier: 3, kind: 'bonus' });
   }
-  // pop bumpers
+  // pop bumpers, alternating sides so the field is balanced
   for (let i = 0; i < mix.bumpers; i++) {
     const r = rand(0.036, 0.048);
-    const p = place(r, 0.26, 0.74);
+    const p = i % 2 === 0 ? place(r, 0.26, 0.74, 0.1, 0.46) : place(r, 0.26, 0.74, 0.54, 0.9);
     if (p) spec.bumpers.push({ u: p.u, v: p.v, r, sign: i === 0 ? +1 : i === 1 ? -1 : sign(), tier: 2, kind: 'pop' });
   }
-  // slingshot-style triangle kickers above the flippers (always −, tier 2)
+  // slingshot-style triangle kickers above the flippers (always −, tier 2),
+  // flush against the side walls so nothing can wedge behind them
   const j = () => rand(-0.02, 0.02);
-  spec.tris.push({ pts: [[0.06, 0.68 + j()], [0.06, 0.82 + j()], [0.17 + j(), 0.8 + j()]], sign: -1, tier: 2 });
-  spec.tris.push({ pts: [[0.94, 0.66 + j()], [0.94, 0.82 + j()], [0.83 + j(), 0.79 + j()]], sign: -1, tier: 2 });
-  placed.push({ u: 0.1, v: 0.76, r: 0.07 }, { u: 0.9, v: 0.75, r: 0.07 });
+  spec.tris.push({ pts: [[0.02, 0.68 + j()], [0.02, 0.82 + j()], [0.16 + j(), 0.8 + j()]], sign: -1, tier: 2 });
+  spec.tris.push({ pts: [[0.98, 0.66 + j()], [0.98, 0.82 + j()], [0.84 + j(), 0.79 + j()]], sign: -1, tier: 2 });
+  placed.push({ u: 0.08, v: 0.76, r: 0.08 }, { u: 0.92, v: 0.75, r: 0.08 });
   // an extra mid-field triangle kicker (+)
   if (coin(0.7)) {
     const p = place(0.05, 0.28, 0.7);
@@ -187,10 +214,13 @@ export function generateSpec(theme = pickTheme()) {
       spec.tris.push({ pts: tp, sign: +1, tier: 2 });
     }
   }
-  // holes / baskets
+  // holes / baskets: the first sits low on the notch side so there is always a
+  // side exit (not everything funnels to the centre), the rest are random
   for (let i = 0; i < mix.holes; i++) {
     const r = rand(0.028, 0.034);
-    const p = place(r, 0.3, 0.78);
+    const p = i === 0
+      ? (notchLeft ? place(r, 0.5, 0.72, 0.1, 0.3) : place(r, 0.5, 0.72, 0.7, 0.9)) || place(r, 0.3, 0.78)
+      : place(r, 0.3, 0.78);
     if (p) spec.holes.push({ u: p.u, v: p.v, r, kind: coin() ? 'hole' : 'basket' });
   }
   // signed rails hugging the side walls
@@ -209,12 +239,36 @@ export function generateSpec(theme = pickTheme()) {
       }
     }
   }
-  // pins: signed kicker pins and plain deflectors
-  for (let i = 0; i < mix.pins; i++) {
+  // pins on a jittered staggered lattice (even coverage → balls scatter
+  // instead of funnelling), filtered by clearance; signed kicker pins + plain
+  const lattice = [];
+  for (let row = 0; row < 8; row++) {
+    const v = 0.22 + row * 0.08;
+    for (let col = 0; col < 9; col++) {
+      const u = 0.1 + col * 0.1 + (row % 2 ? 0.05 : 0);
+      lattice.push([u + rand(-0.015, 0.015), v + rand(-0.012, 0.012)]);
+    }
+  }
+  for (let i = lattice.length - 1; i > 0; i--) { const k = (Math.random() * (i + 1)) | 0; [lattice[i], lattice[k]] = [lattice[k], lattice[i]]; }
+  let pinsLeft = mix.pins;
+  for (const [u, v] of lattice) {
+    if (pinsLeft <= 0) break;
     const signed = coin(0.6);
     const r = signed ? rand(0.012, 0.014) : rand(0.01, 0.012);
-    const p = place(r + 0.012, 0.2, 0.8);
-    if (p) spec.pins.push({ u: p.u, v: p.v, r, sign: signed ? sign() : 0, tier: 1 });
+    if (clearOf(u, v, r)) {
+      placed.push({ u, v, r });
+      spec.pins.push({ u, v, r, sign: signed ? sign() : 0, tier: 1 });
+      pinsLeft--;
+    }
+  }
+  // decorative chamfered plates (sector panels) for surface depth
+  spec.plates = [];
+  for (let k = 0; k < 40 && spec.plates.length < 4; k++) {
+    const w = rand(0.14, 0.26), h = rand(0.08, 0.16), u = rand(0.06, 0.94 - w), v = rand(0.2, 0.78 - h);
+    const corners = [[u, v], [u + w, v], [u, v + h], [u + w, v + h]];
+    if (corners.every(([cu, cv]) => inside(cu, cv, 0.02)) && spec.plates.every((pl) => u > pl.u + pl.w + 0.02 || u + w < pl.u - 0.02 || v > pl.v + pl.h + 0.02 || v + h < pl.v - 0.02)) {
+      spec.plates.push({ u, v, w, h, ch: rand(0.02, 0.04) });
+    }
   }
 
   // --- flippers, exit, no-aim zone -----------------------------------------
@@ -270,8 +324,10 @@ export function realize(spec, x0, y0, w, h) {
     exit: { x0: x0 + spec.exit.u0 * w, x1: x0 + spec.exit.u1 * w, flashT: 0 },
     forbid: { x0: x0 + spec.forbid.u0 * w, x1: x0 + spec.forbid.u1 * w, y0: y0 + spec.forbid.v0 * h, y1: y0 + spec.forbid.v1 * h },
     decor: spec.decor.map((line) => line.map(P)),
+    plates: (spec.plates || []).map((pl) => ({ x: x0 + pl.u * w, y: y0 + pl.v * h, w: pl.w * w, h: pl.h * h, ch: pl.ch * w })),
     labels: spec.labels.map((l) => ({ ...l, ...P([l.u, l.v]), px: l.size * w })),
-    orbit: spec.orbit ? { x: x0 + spec.orbit.u * w, y: y0 + spec.orbit.v * h, r: spec.orbit.r * w } : null,
+    orbit: spec.orbit ? { x: x0 + spec.orbit.u * w, y: y0 + spec.orbit.v * h, r: spec.orbit.r * w, pts: spec.orbit.pts.map(P) } : null,
+    swoosh: spec.swoosh ? { pts: spec.swoosh.pts.map(P) } : null,
     centroid: { x: x0 + 0.5 * w, y: y0 + 0.45 * h },
   };
   return board;
