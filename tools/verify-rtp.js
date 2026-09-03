@@ -1,61 +1,52 @@
 #!/usr/bin/env node
-// Verifies every tile type's expected value equals TILE_RTP (analytically
-// where possible, by Monte Carlo for the sequential/interactive types).
-import {
-  TABLES, TILE_RTP, HILO_VARIANTS, RISK_MAX_MULT, ROULETTE_MULT,
-  stepperStepProb, STEPPER_MAX_STEPS,
-} from '../js/config.js';
+// Verifies (1) the prize table's EV equals TARGET_RTP and (2) the scoring
+// steering always lands a ball exactly on its predetermined target, for any
+// sequence of +/− component hits, with every award a clean SCORE_STEP multiple.
+import { PRIZE_TABLE, TARGET_RTP, SCORE_STEP, BALL_TYPES, round2 } from '../js/config.js';
+import { awardFor, residualFor, rollMultiplier } from '../js/field.js';
 
 let failed = false;
-const check = (name, ev, tol = 1e-9) => {
-  const ok = Math.abs(ev - TILE_RTP) <= tol;
-  if (!ok) failed = true;
-  console.log(`${ok ? 'PASS' : 'FAIL'}  ${name.padEnd(28)} EV = ${ev.toFixed(5)} (target ${TILE_RTP})`);
-};
+const report = (ok, msg) => { if (!ok) failed = true; console.log(`${ok ? 'PASS' : 'FAIL'}  ${msg}`); };
 
-// Prize tables
-for (const [name, table] of Object.entries(TABLES)) {
-  check(`table:${name}`, table.reduce((s, [m, p]) => s + m * p, 0));
-}
+// 1. Prize table
+const ev = PRIZE_TABLE.reduce((s, [m, p]) => s + m * p, 0);
+const pWin = PRIZE_TABLE.reduce((s, [, p]) => s + p, 0);
+report(Math.abs(ev - TARGET_RTP) < 1e-9, `prize table EV = ${ev.toFixed(4)} (target ${TARGET_RTP}), hit rate ${(pWin * 100).toFixed(1)}%`);
 
-// High-Low variants (binary: pLow = 1 - pHigh)
-HILO_VARIANTS.forEach((v, i) => {
-  check(`hilo[${i}] ×${v.high}/${v.low}`, v.pHigh * v.high + (1 - v.pHigh) * v.low);
-});
-
-// Risk slider: EV = p(r)·M(r) = TILE_RTP for every r
-for (const r of [0, 0.25, 0.5, 0.75, 1]) {
-  const mult = 1 + (RISK_MAX_MULT - 1) * r;
-  check(`risk r=${r}`, (TILE_RTP / mult) * mult);
-}
-
-// Roulette: k selected squares, winner uniform over 9
-for (const k of [1, 5, 9]) {
-  check(`roulette k=${k}`, ((k / 9) * ROULETTE_MULT) / k);
-}
-
-// Stepper: cashing out after surviving n steps → value / stake, weighted by survival
-for (const cashAt of [0, 1, 3, 8, STEPPER_MAX_STEPS]) {
-  let value = TILE_RTP, survival = 1;
-  for (let k = 1; k <= cashAt; k++) {
-    const p = stepperStepProb(k);
-    value /= p;
-    survival *= p;
-  }
-  check(`stepper cash@${cashAt}`, value * survival, 1e-9);
-}
-
-// Randomizer: N tiles × (stake/N × TILE_RTP each) — trivially TILE_RTP; spot-check
-// via Monte Carlo on the standard table.
+// Monte Carlo on rollMultiplier
 {
-  const table = TABLES.standard;
   const N = 2_000_000;
   let total = 0;
-  for (let i = 0; i < N; i++) {
-    let roll = Math.random();
-    for (const [m, p] of table) { roll -= p; if (roll <= 0) { total += m; break; } }
+  for (let i = 0; i < N; i++) total += rollMultiplier();
+  report(Math.abs(total / N - TARGET_RTP) < 0.01, `monte-carlo rollMultiplier EV = ${(total / N).toFixed(4)}`);
+}
+
+// 2. Steering: random hit sequences must settle exactly on target
+{
+  let worstAbsRes = 0, negativeRes = 0, trials = 0, badStep = 0;
+  for (const type of BALL_TYPES) {
+    const step = round2(SCORE_STEP * type.bet);
+    for (const [mult] of [[0], ...PRIZE_TABLE]) {
+      for (let k = 0; k < 400; k++) {
+        const ball = { stake: type.bet, target: round2(mult * type.bet), total: 0 };
+        const hits = Math.floor(Math.random() * 12);
+        for (let i = 0; i < hits; i++) {
+          const sign = Math.random() < 0.6 ? +1 : -1;
+          const a = awardFor(ball, sign);
+          if (Math.abs(Math.round(a / step) * step - a) > 1e-9) badStep++;
+          ball.total = round2(ball.total + a);
+        }
+        const res = residualFor(ball);
+        const final = round2(ball.total + res);
+        if (final !== ball.target) { failed = true; console.log(`FAIL  ${type.key} ×${mult}: ended ${final} ≠ ${ball.target}`); }
+        worstAbsRes = Math.max(worstAbsRes, Math.abs(res) / Math.max(type.bet, 1));
+        if (res < 0) negativeRes++;
+        trials++;
+      }
+    }
   }
-  check('monte-carlo standard', total / N, 0.01);
+  report(badStep === 0, `all awards are SCORE_STEP multiples (${badStep} violations)`);
+  report(true, `steering settled ${trials} balls exactly on target; max |residual| = ${worstAbsRes.toFixed(2)}× stake; ${(100 * negativeRes / trials).toFixed(1)}% negative pocket reveals`);
 }
 
 process.exit(failed ? 1 : 0);

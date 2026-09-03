@@ -1,12 +1,13 @@
 # Slingo
 
-A 2.5D slingshot betting game, playable on mobile and desktop as an installable PWA.
-Pull back the slingshot, fire at a 3×3 jumbo board of mystery tiles, and chase
-line-pattern bonuses.
+Slingshot pinball, playable on mobile and desktop as an installable PWA. Pull
+back the slingshot, lob a ball into the playfield, and watch it bounce, roll and
+drop through bumpers, pins, lanes and rails until a mystery pocket or hole
+swallows it — racking up its prize along the way.
 
 ## Play it
 
-Any static file server works (no build step, zero dependencies):
+Any static file server works (no bundler, zero dependencies):
 
 ```sh
 python3 -m http.server 8080
@@ -14,76 +15,65 @@ python3 -m http.server 8080
 ```
 
 Open `http://localhost:8080`. On a phone, "Add to Home Screen" installs it as a
-standalone app (manifest + service worker included; works offline after first load).
+standalone app (manifest + service worker included; works offline after first
+load). `./build.sh` produces a clean `dist/` folder containing only the runtime
+files, for uploading elsewhere.
 
 ## Controls
 
-- **Mobile**: touch the slingshot pouch area (lower part of the screen), pull back
-  with your finger to set aim and power, release to fire. The device vibrates when
-  you reach maximum pull, and the camera kicks on release proportionally to shot
-  strength.
+- **Mobile**: touch the slingshot area (below the field), pull back to set aim
+  and power, release to fire. The device buzzes at maximum pull and the camera
+  kicks on release proportionally to shot strength.
 - **Desktop**: identical, with click-and-drag.
+- A filled trajectory line and glowing reticle show exactly where the ball will
+  drop in. The slingshot can only shoot into the field's entry zone (top of the
+  table), so aim is a matter of taste, not skill.
+- **Ball type** (bottom button) cycles the bet: Bronze $1, Silver $5, Gold $10,
+  Platinum $25, Diamond $100. The loaded ball takes on that colour.
+- Fire as fast as you can pull. Multiple balls play out at once, each with its
+  own floating running total; balls bounce off each other too.
 
-While aiming, a filled trajectory line and a glowing reticle mark the exact
-landing point of the shot. The ⟳ button on the right edge refreshes the whole
-board with fresh tiles.
+## Playfield
 
-The bet bar under the slingshot controls the general bet level ($1–$100): every
-tile's base cost scales with it (e.g. Stepper $2 → $200 at level 100, Roulette
-$0.50/sq → $50/sq, Fill & Deal per-shot amounts likewise). The 🎲 toggle
-switches to shuffle mode, where each tile instead draws a random chip bet
-($1/$2/$5/$10/$25/$50/$100) so the board mixes stakes.
-
-The game opens straight into play with the slingshot primed and a ball loaded.
-Hitting a tile places an isolated bet at the cost shown on its face; the tile spins
-around its central vertical pivot before settling on its back side, which shows the
-outcome. Resolved tiles refill with a fresh random tile after a short delay.
-
-## Tile types
-
-All types share the same per-bet RTP (see math below). Each front face shows a
-question-mark watermark, a type-distinct background color, and its glowing cost.
-
-| Type | Behaviour |
+| Component | What it does |
 | --- | --- |
-| **Standard** | Normal prize table (×0.5 up to ×10), mid-weighted: ~65% hit rate, 35% losses. |
-| **Safe** | 75% hit rate, mostly ×0.5–×2, rare ×5/×8. |
-| **Wild** | ~5% hit rate, ×10 up to ×100. |
-| **Jackpot** | ×500 or nothing; 0.188% win chance (RTP/500). |
-| **Double or Nothing** | ×2 at 47%, else nothing. |
-| **High / Low** | Strictly binary: every bet lands on one of the two displayed options and the percentages sum to 100 (e.g. ▲×1.6 @ 40%, ▼×0.5 @ 60%); a miss only exists in the variant whose low option is ×0. |
-| **Fill & Deal** | Shots into the doggy-door slot each add $1/$2/$5/$10/$25 (per tile) to the counter; a shot anywhere else on the tile places the accumulated bet on the standard table. |
-| **Risk Slider** | Fixed cost; a slider oscillates 0%→100%→0% every 2 s. Risk r gives multiplier 1+49r and win chance RTP/mult — hit the tile to lock in the current risk. |
-| **Randomizer** | Shows a count 1–5 (2–3 most common). On hit, that many random tiles resolve simultaneously, splitting the stake. |
-| **Roulette** | Shots toggle the 3×3 LED cubes yellow; a shot elsewhere places one bet per selected cube. The drawn cube lights green (selected) or red (not); a hit pays ×8.46 per square (9 × RTP, so EV per square = RTP). |
-| **Stepper** | First shot anywhere on the tile starts the game and places the bet; the crash step is pre-drawn in one isolated event. Hitting the STEP button advances (cash-out value ÷= step probability); hitting anywhere else on the tile cashes out. Counters show current cash-out value and next-step success %. |
+| **+ bumpers** (green) | Kick the ball away and add to its running total. |
+| **− bumpers** (red) | Kick the ball away and subtract. |
+| **Pins** | Pure deflectors (plinko-style), no score. |
+| **Rollover lanes** (top) | Three dashed gates; crossing one downward adds. |
+| **Signed rails** | Slanted side pieces: red pair mid-field subtracts, green pair lower down adds. |
+| **Holes** (three "?" wells) | Swallow the ball and settle the bet immediately. |
+| **Mystery pockets** (five "?" slots along the bottom) | Where every ball eventually drains; settles the bet. |
 
-## Pattern bonuses
+## How the outcome works
 
-Winning tiles keep their perimeter lit while they extend a straight line of
-*consecutive* winners. A losing hit, or a winner that doesn't continue the line,
-clears the lights (the newest winner stays lit if it won). Deterministic awards
-(a full line on the 3×3 board is 3 tiles; diagonals run through the centre, so
-they pay more):
+Every ball is an isolated bet at the ball's bet value. The outcome is decided
+the moment you fire: a multiplier is drawn from the prize table below, fixing
+the ball's **target prize**. The physics that follows is real (gravity,
+restitution, bumper kicks) but purely visual — it cannot change the outcome.
 
-- **3-tile horizontal/vertical line**: last won prize ×2
-- **3-tile diagonal**: last won prize ×3
+- **Signed components steer toward the target.** A + component awards a share of
+  the remaining gap; a − component pulls back an overshoot (or nibbles a nominal
+  step so later + hits have something to fill). Awards are always multiples of
+  5% of the stake, so totals stay clean.
+- **Every route ends in a pocket or hole**, which reveals the exact residual
+  between the running total and the target — so the target is reached on every
+  possible path, and no ball can get "stuck" short of it. Stuck balls are nudged,
+  gravity ramps up after 18 s, and a ball is force-settled at 30 s.
+- The reveal card shows the residual and the final result (`×2 · $20.00`, or
+  `×0`).
 
-## RTP math
+### Prize table (per ball, EV = 96% of stake)
 
-- Target RTP: **96%**. Per-bet tile EV: **94%** — the 2-point gap is the
-  deterministic budget for pattern bonuses.
-- Every prize table satisfies Σ (multiplier × probability) = 0.94.
-- Risk slider: win probability is 0.94 / multiplier, so EV is 0.94 at every risk.
-- Roulette: 9 cubes, uniform draw, prize 9 × 0.94 = ×8.46 per selected square.
-- Stepper: immediate cash-out returns 0.94×cost and every step is EV-neutral
-  (value ÷= success probability), so *any* strategy has EV 0.94.
-- Randomizer: stake splits evenly over the chosen tiles, each resolving at 0.94 EV.
+| Multiplier | ×0.5 | ×1 | ×1.5 | ×2 | ×3 | ×5 | ×10 | ×25 | ×100 | ×0 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Probability | 20% | 20% | 10% | 8% | 4% | 2% | 0.6% | 0.12% | 0.04% | 35.2% |
 
-Run the checks:
+Overall RTP is **96%**, the same as before. Verify it (and the steering
+guarantee) with:
 
 ```sh
-node tools/verify-rtp.js   # analytic + Monte Carlo verification
+node tools/verify-rtp.js   # table EV + 20,000 simulated balls settle exactly on target
 node tools/gen-icons.js    # regenerate PWA icons (dependency-free PNG encoder)
 ```
 
@@ -92,11 +82,12 @@ node tools/gen-icons.js    # regenerate PWA icons (dependency-free PNG encoder)
 ```
 index.html            app shell + HUD
 style.css             layout, HUD, safe-area handling
-js/config.js          RTP targets, prize tables, tile registry
-js/tiles.js           tile creation, outcome rolls, per-type hit logic
-js/main.js            board geometry, slingshot, projectile, rendering, bonuses
+js/config.js          RTP target, prize table, ball types, physics constants
+js/field.js           playfield layout + deterministic scoring/steering
+js/main.js            slingshot, ball flight, pinball physics, rendering
 js/audio.js           tiny WebAudio synth (no assets)
 sw.js                 service worker (offline cache)
 manifest.json         PWA manifest
-tools/                icon generator + RTP verifier
+build.sh              writes dist/ (runtime files only)
+tools/                icon generator + RTP/steering verifier
 ```

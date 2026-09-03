@@ -1,131 +1,66 @@
 // Slingo — game configuration & RTP math.
 //
-// Every slingshot hit is an isolated bet. Each tile type resolves with an
-// expected value of TILE_RTP × stake; the gap between TILE_RTP and TARGET_RTP
-// is the (deterministic) budget for the pattern bonuses, which multiply the
-// last won prize when 3/5-tile lines of consecutive winners are completed.
+// Every ball is an isolated bet. At launch a multiplier is drawn from
+// PRIZE_TABLE (Σ m·p = TARGET_RTP), fixing the ball's target prize. The
+// pinball physics that follows is purely visual: scoring components steer the
+// running total toward the target in SCORE_STEP increments, and whichever
+// pocket or hole finally swallows the ball reveals the exact residual — so the
+// deterministic outcome is reached on every possible route.
 
 export const TARGET_RTP = 0.96;
-export const TILE_RTP = 0.94; // per-bet EV; ~2% headroom funds pattern bonuses
 
 export const START_BALANCE = 1000;
 export const TOPUP_AMOUNT = 500;
 
-// General bet controls: the slider sets a flat bet level applied to every
-// tile's base cost; shuffle mode instead gives each tile a random chip level.
-export const BET_MIN = 1;
-export const BET_MAX = 100;
-export const CHIP_BETS = [1, 2, 5, 10, 25, 50, 100];
-
-// Board is GRID × GRID.
-export const GRID = 3;
-
-// Pattern bonuses: extra payout = (mult - 1) × last won prize.
-// On a 3×3 board a full line is 3 tiles; diagonals (through the centre) pay more.
-export const BONUS = {
-  line3: { mult: 2, label: 'LINE' },
-  diag3: { mult: 3, label: 'DIAGONAL' },
-};
-
-// Prize tables: [multiplier, probability]. Remaining probability = lose (×0).
-// Each table's Σ m·p must equal TILE_RTP (verified by tools/verify-rtp.js).
-export const TABLES = {
-  // Normal prize spread. Deliberately mid-weighted (64.8% hit rate, only 35%
-  // total losses) so it doesn't feel tail-heavy like wild/jackpot.
-  standard: [
-    [0.5, 0.2],
-    [1, 0.22],
-    [2, 0.14],
-    [3, 0.06],
-    [5, 0.024],
-    [10, 0.004],
-  ],
-  // High hit rate (75.5% overall, 70% in the 0.5–2× band), small wins.
-  safe: [
-    [0.5, 0.3],
-    [1, 0.25],
-    [1.5, 0.1],
-    [2, 0.05],
-    [5, 0.05],
-    [8, 0.005],
-  ],
-  // Low hit rate (~5.4%), much larger multipliers.
-  wild: [
-    [10, 0.03],
-    [20, 0.02],
-    [50, 0.004],
-    [100, 0.0004],
-  ],
-  // Pure jackpot: ×500 or nothing. p = RTP/500 = 0.188%.
-  jackpot: [
-    [500, TILE_RTP / 500],
-  ],
-  // Binary; probability chosen to hit tile RTP.
-  double: [[2, TILE_RTP / 2]],
-};
-
-// High-Low variants: strictly binary — pHigh + pLow = 1, so every bet lands on
-// one of the two options. pH·H + (1-pH)·L = TILE_RTP. A miss only exists when
-// the low option is ×0. One variant is chosen per tile.
-export const HILO_VARIANTS = [
-  { high: 1.6, pHigh: 0.4, low: 0.5 },
-  { high: 2.7, pHigh: 0.2, low: 0.5 },
-  { high: 9.4, pHigh: 0.1, low: 0 },
+// Ball types: the bet is chosen by cycling the ball type.
+export const BALL_TYPES = [
+  { key: 'bronze', name: 'BRONZE', bet: 1, color: '#c98f2d', hi: '#ffe9a8' },
+  { key: 'silver', name: 'SILVER', bet: 5, color: '#aab6c8', hi: '#f4f8ff' },
+  { key: 'gold', name: 'GOLD', bet: 10, color: '#ffd65a', hi: '#fff6d8' },
+  { key: 'platinum', name: 'PLATINUM', bet: 25, color: '#7fd8ff', hi: '#e9fbff' },
+  { key: 'diamond', name: 'DIAMOND', bet: 100, color: '#d9a1ff', hi: '#fbefff' },
 ];
 
-// Risk slider: risk r∈[0,1] → multiplier M(r) = 1 + (RISK_MAX_MULT-1)·r,
-// win probability p(r) = TILE_RTP / M(r)  ⇒  EV = TILE_RTP for every r.
-export const RISK_MAX_MULT = 50;
-export const RISK_PERIOD_MS = 2000; // 0%→100%→0% round trip
-
-// Roulette: winning cube uniform over 9; prize per selected winning square is
-// 9 × TILE_RTP (= 8.46× at 94%), so EV per square staked = TILE_RTP.
-export const ROULETTE_MULT = 9 * TILE_RTP;
-
-// Stepper: immediate cash-out returns TILE_RTP × cost; every further step is
-// EV-neutral (value ÷= p on success), so any strategy has EV = TILE_RTP.
-export function stepperStepProb(k) {
-  // Success probability of attempting step k (1-based).
-  return Math.max(0.55, 0.86 - 0.02 * (k - 1));
-}
-export const STEPPER_MAX_STEPS = 40;
-
-// Randomizer tile count weights (2–3 most common).
-export const RANDOMIZER_COUNTS = [
-  [1, 0.1],
-  [2, 0.3],
-  [3, 0.3],
-  [4, 0.2],
-  [5, 0.1],
+// Prize table: [multiplier, probability]. Remaining probability = ×0.
+// Σ m·p = 0.96 (verified by tools/verify-rtp.js). ~64.8% of balls win something.
+export const PRIZE_TABLE = [
+  [0.5, 0.2],
+  [1, 0.2],
+  [1.5, 0.1],
+  [2, 0.08],
+  [3, 0.04],
+  [5, 0.02],
+  [10, 0.006],
+  [25, 0.0012],
+  [100, 0.0004],
 ];
 
-// Fill & Deal per-shot increments (one is chosen per tile instance).
-export const FILL_INCREMENTS = [
-  [1, 0.35],
-  [2, 0.3],
-  [5, 0.2],
-  [10, 0.1],
-  [25, 0.05],
-];
+// Component awards are multiples of SCORE_STEP × stake (5% of the bet), which
+// keeps every running total and pocket reveal a clean amount.
+export const SCORE_STEP = 0.05;
 
-// Tile type registry: costs, colors, board-population weights.
-export const TYPES = {
-  standard: { name: 'STANDARD', cost: 1, color: '#3b4a6b', accent: '#8fb4ff', weight: 20 },
-  safe: { name: 'SAFE', cost: 1, color: '#1f7a4d', accent: '#7dffb9', weight: 12 },
-  wild: { name: 'WILD', cost: 1, color: '#6b2fa0', accent: '#d9a1ff', weight: 10 },
-  jackpot: { name: 'JACKPOT', cost: 1, color: '#7a5c10', accent: '#ffd94d', weight: 7 },
-  double: { name: 'DOUBLE OR NOTHING', cost: 1, color: '#a03030', accent: '#ff9d9d', weight: 10 },
-  hilo: { name: 'HIGH / LOW', cost: 1, color: '#146e73', accent: '#7ef3f9', weight: 10 },
-  fill: { name: 'FILL & DEAL', cost: 0, color: '#8a4b1f', accent: '#ffc07d', weight: 8 },
-  risk: { name: 'RISK SLIDER', cost: 1, color: '#a02864', accent: '#ff8ec4', weight: 8 },
-  randomizer: { name: 'RANDOMIZER', cost: 2, color: '#2b7fb8', accent: '#9fdcff', weight: 6 },
-  roulette: { name: 'ROULETTE', cost: 0.5, color: '#7a1f3d', accent: '#ff7da0', weight: 5 },
-  stepper: { name: 'STEPPER', cost: 2, color: '#35389a', accent: '#a3a6ff', weight: 6 },
+// Physics (all speeds/accelerations scale with the field height).
+export const PHYS = {
+  gravity: 0.78,       // × fieldHeight / s²  (a gently tilted table)
+  restitutionWall: 0.6,
+  restitutionPin: 0.8,
+  restitutionBumper: 0.45,
+  bumperKick: 0.8,     // × fieldHeight / s
+  drag: 0.08,          // per second
+  maxSpeed: 2.6,       // × fieldHeight / s
+  ballRadius: 0.017,   // × fieldWidth
+  entrySpeed: [0.22, 0.42], // × fieldHeight / s at min/max pull
+  softLifeMs: 18000,   // after this, gravity ramps up to drain stuck balls
+  hardLifeMs: 30000,   // after this, the ball is force-settled
 };
-
-export const RESPAWN_DELAY_MS = 2600;
 
 export function fmtMoney(v) {
-  const s = Math.abs(v) < 10 ? v.toFixed(2) : v < 100 ? v.toFixed(2) : Math.round(v).toString();
-  return '$' + s;
+  const neg = v < 0;
+  const a = Math.abs(v);
+  const s = a < 100 ? a.toFixed(2) : Math.round(a).toString();
+  return (neg ? '−$' : '$') + s;
+}
+
+export function round2(v) {
+  return Math.round(v * 100) / 100;
 }

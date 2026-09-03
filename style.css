@@ -50,6 +50,13 @@ html, body {
   text-shadow: 0 0 8px rgba(125, 255, 185, 0.6);
 }
 
+#inplay {
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: #8fdcff;
+}
+
 .pill {
   background: rgba(20, 24, 56, 0.85);
   border: 1px solid rgba(140, 160, 255, 0.35);
@@ -67,25 +74,6 @@ html, body {
 }
 .btn:active { transform: scale(0.94); }
 
-#refresh {
-  position: fixed;
-  right: calc(8px + env(safe-area-inset-right));
-  top: 50%;
-  transform: translateY(-50%);
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  background: rgba(20, 24, 56, 0.85);
-  border: 1px solid rgba(110, 200, 255, 0.5);
-  color: #8fdcff;
-  font-size: 22px;
-  font-weight: 700;
-  line-height: 1;
-  z-index: 10;
-  box-shadow: 0 0 10px rgba(64, 224, 255, 0.25);
-}
-#refresh:active { transform: translateY(-50%) rotate(180deg) scale(0.94); }
-
 #betbar {
   position: fixed;
   left: 0;
@@ -94,35 +82,27 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
   padding: 6px 14px calc(8px + env(safe-area-inset-bottom));
+  pointer-events: none;
   z-index: 10;
 }
 
-#betlabel {
-  min-width: 92px;
-  text-align: center;
-  font-size: 13px;
-  color: #8fdcff;
-}
-
-#betslider {
-  width: min(46vw, 300px);
-  accent-color: #40e0ff;
-  cursor: pointer;
-}
-#betslider:disabled { opacity: 0.35; }
-
-#shuffle {
-  font-size: 16px;
+#balltype {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 14px 7px 9px;
   border-color: rgba(110, 200, 255, 0.5);
+  letter-spacing: 0.5px;
 }
-#shuffle.on {
-  border-color: #ffd65a;
-  color: #ffd65a;
-  background: rgba(90, 70, 10, 0.6);
-  box-shadow: 0 0 10px rgba(255, 214, 90, 0.45);
+#balldot {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #c98f2d;
+  flex: none;
 }
+#balltype .chev { color: #8fdcff; font-size: 12px; }
 
 #toast {
   position: fixed;

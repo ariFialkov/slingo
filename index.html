@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>Slingo</title>
-  <meta name="description" content="Slingo — a 2.5D slingshot betting game. Pull back, fire at the jumbo board, chase line bonuses." />
+  <meta name="description" content="Slingo — slingshot pinball. Sling balls into the field, watch them bounce to their prize." />
   <meta name="theme-color" content="#0d1026" />
   <link rel="manifest" href="manifest.json" />
   <link rel="icon" href="icons/icon-192.png" />
@@ -22,16 +22,18 @@
       <span id="lastwin"></span>
     </div>
     <div class="hud-right">
+      <span id="inplay"></span>
       <span id="balance" class="pill">$0</span>
-      <button id="topup" class="pill btn" type="button">+$100</button>
+      <button id="topup" class="pill btn" type="button">+$500</button>
       <button id="mute" class="pill btn" type="button">🔊</button>
     </div>
   </div>
-  <button id="refresh" class="btn" type="button" title="Refresh board">⟳</button>
   <div id="betbar">
-    <span id="betlabel" class="pill">BET $1</span>
-    <input id="betslider" type="range" min="1" max="100" step="1" value="1" aria-label="Bet amount" />
-    <button id="shuffle" class="pill btn" type="button" title="Random bet per tile">🎲</button>
+    <button id="balltype" class="pill btn" type="button" title="Change ball (bet)">
+      <span id="balldot"></span>
+      <span id="ballname">BRONZE · $1.00</span>
+      <span class="chev">▸</span>
+    </button>
   </div>
   <div id="toast"></div>
   <script type="module" src="js/main.js"></script>

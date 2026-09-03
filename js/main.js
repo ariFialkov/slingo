@@ -1,14 +1,9 @@
-// Slingo — main game: board, slingshot, projectile, streak bonuses, rendering.
+// Slingo — slingshot pinball: state, input, physics, scoring and rendering.
 import {
-  TYPES, BONUS, GRID, START_BALANCE, TOPUP_AMOUNT, RESPAWN_DELAY_MS,
-  RISK_MAX_MULT, ROULETTE_MULT, stepperStepProb, fmtMoney, TILE_RTP,
-  CHIP_BETS,
+  BALL_TYPES, START_BALANCE, TOPUP_AMOUNT, PHYS, fmtMoney, round2,
 } from './config.js';
-import {
-  makeTile, applyBet, hitTile, riskPosition, instantOutcome, rouletteCubeRect,
-  tileCostLabel,
-} from './tiles.js';
-import { initAudio, sfx, toggleMute, isMuted } from './audio.js';
+import { buildField, rollMultiplier, awardFor, residualFor } from './field.js';
+import { initAudio, sfx, toggleMute } from './audio.js';
 
 // ---------------------------------------------------------------------------
 // Canvas / layout
@@ -16,8 +11,7 @@ import { initAudio, sfx, toggleMute, isMuted } from './audio.js';
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 let W = 0, H = 0, DPR = 1;
-
-const board = { top: 0, bottom: 0, cx: 0, wTop: 0, wBottom: 0 };
+let field = null;
 const sling = { ax: 0, ay: 0, maxPull: 0 };
 
 function layout() {
@@ -29,101 +23,80 @@ function layout() {
   canvas.style.width = W + 'px';
   canvas.style.height = H + 'px';
 
-  // Board fills the screen in at least one dimension, leaving a small strip
-  // at the bottom for the slingshot.
-  const availTop = H * 0.075;
-  const availH = H * 0.79 - availTop;
-  const bw = Math.min(W * 0.97, availH * 1.05);
-  const bh = Math.min(availH, bw * 1.06); // keep tiles near-square (no stretch)
-  board.top = availTop + (availH - bh) / 2; // centre in the available area
-  board.bottom = board.top + bh;
-  board.cx = W / 2;
-  board.wBottom = bw;
-  board.wTop = bw * 0.87;
+  // Playfield fills the screen above a slim slingshot strip.
+  const top = H * 0.07;
+  const availH = H * 0.79 - top;
+  let fw = Math.min(W * 0.96, availH * 0.8);
+  let fh = Math.min(availH, fw / 0.58);
+  const fx = (W - fw) / 2;
+  const fy = top + (availH - fh) / 2;
+  const old = field;
+  field = buildField(fx, fy, fw, fh);
+  if (old) rescaleBalls(old, field);
 
   sling.ax = W / 2;
-  sling.ay = H * 0.865;
+  sling.ay = H * 0.875;
   sling.maxPull = Math.min(Math.min(W, H) * 0.22, (H - sling.ay) * 1.6);
 }
-window.addEventListener('resize', layout);
-layout();
 
-// Board mapping: (u,v) ∈ [0,GRID]² → screen, v=0 is the far (top) row.
-function rowY(v) { return board.top + (board.bottom - board.top) * (v / GRID); }
-function rowW(v) { return board.wTop + (board.wBottom - board.wTop) * (v / GRID); }
-function boardPt(u, v) { return { x: board.cx + (u / GRID - 0.5) * rowW(v), y: rowY(v) }; }
-function screenToBoard(x, y) {
-  const v = ((y - board.top) / (board.bottom - board.top)) * GRID;
-  if (v < 0 || v >= GRID) return null;
-  const u = ((x - board.cx) / rowW(v) + 0.5) * GRID;
-  if (u < 0 || u >= GRID) return null;
-  return { u, v };
-}
-function tileRect(r, c) {
-  const p = boardPt(c + 0.5, r + 0.5);
-  const w = (rowW(r + 0.5) / GRID) * 0.95;
-  const h = (rowY(r + 1) - rowY(r)) * 0.94;
-  return { cx: p.x, cy: p.y, w, h };
+// Keep balls in place (relative to the field) across resizes.
+function rescaleBalls(oldF, newF) {
+  const sx = newF.w / oldF.w, sy = newF.h / oldF.h;
+  for (const b of state.balls) {
+    b.x = newF.x0 + (b.x - oldF.x0) * sx;
+    b.y = newF.y0 + (b.y - oldF.y0) * sy;
+    b.vx *= sx; b.vy *= sy;
+    b.r = PHYS.ballRadius * newF.w;
+  }
 }
 
 // ---------------------------------------------------------------------------
-// Game state
+// State
 // ---------------------------------------------------------------------------
 const state = {
   balance: START_BALANCE,
   lastWin: 0,
-  betLevel: 1,
-  shuffle: false, // random chip bet per tile instead of a flat level
-  cells: [],
-  litCells: new Set(),
-  streak: { cells: [], dir: null },
-  projectile: null,
+  typeIdx: 0,
+  flights: [],   // balls arcing from the slingshot into the field
+  balls: [],     // balls in play on the field
+  effects: [],
+  drag: null,
   loaded: true,
   reloadAt: 0,
-  drag: null, // {id, px, py, buzzed}
   shake: { mag: 0, t: 0 },
-  effects: [],
-  pending: [], // [{at, fn}] scheduled actions
   now: performance.now(),
+  last: performance.now(),
+  settled: [],   // {target, paid} log (used by tests)
 };
+window.__slingo = state;
+layout();
+window.addEventListener('resize', layout);
 
-function currentBet() {
-  return state.shuffle ? CHIP_BETS[(Math.random() * CHIP_BETS.length) | 0] : state.betLevel;
-}
-const newTile = () => makeTile(undefined, currentBet());
-
-for (let r = 0; r < GRID; r++) {
-  for (let c = 0; c < GRID; c++) {
-    state.cells.push({
-      r, c,
-      tile: newTile(),
-      face: 'front',
-      flip: null,       // {start, dur, halfTurns, fromFace, toFace}
-      result: null,     // {label, prize, win}
-      respawnAt: 0,
-    });
-  }
-}
-const cellAt = (r, c) => state.cells[r * GRID + c];
-const cellKey = (cell) => cell.r + ',' + cell.c;
-
-function schedule(delay, fn) { state.pending.push({ at: state.now + delay, fn }); }
-
-function startFlip(cell, toFace, halfTurns, dur) {
-  cell.flip = { start: state.now, dur, halfTurns, fromFace: cell.face, toFace };
-}
+const ballType = () => BALL_TYPES[state.typeIdx];
 
 // ---------------------------------------------------------------------------
 // HUD
 // ---------------------------------------------------------------------------
 const $balance = document.getElementById('balance');
 const $lastwin = document.getElementById('lastwin');
+const $inplay = document.getElementById('inplay');
 const $toast = document.getElementById('toast');
+const $type = document.getElementById('balltype');
+const $typeDot = document.getElementById('balldot');
+const $typeName = document.getElementById('ballname');
 let toastTimer = 0;
 
 function updateHUD() {
   $balance.textContent = fmtMoney(state.balance);
   $lastwin.textContent = state.lastWin > 0 ? 'WIN ' + fmtMoney(state.lastWin) : '';
+  const n = state.balls.length + state.flights.length;
+  $inplay.textContent = n ? `${n} IN PLAY` : '';
+}
+function updateTypeUI() {
+  const t = ballType();
+  $typeDot.style.background = `radial-gradient(circle at 35% 35%, ${t.hi}, ${t.color})`;
+  $typeDot.style.boxShadow = `0 0 10px ${t.color}`;
+  $typeName.textContent = `${t.name} · ${fmtMoney(t.bet)}`;
 }
 function toast(msg) {
   $toast.textContent = msg;
@@ -140,231 +113,22 @@ $topup.addEventListener('click', () => {
 });
 const $mute = document.getElementById('mute');
 $mute.addEventListener('click', () => { $mute.textContent = toggleMute() ? '🔇' : '🔊'; });
-// Bet slider + shuffle toggle
-const $betslider = document.getElementById('betslider');
-const $betlabel = document.getElementById('betlabel');
-const $shuffle = document.getElementById('shuffle');
-
-function applyBetToBoard() {
-  for (const cell of state.cells) {
-    if (cell.face !== 'front' || cell.flip || cell.respawnAt || tileBusy(cell.tile)) continue;
-    applyBet(cell.tile, currentBet());
-  }
-}
-function updateBetUI() {
-  $betlabel.textContent = state.shuffle ? 'BET $1–$100' : 'BET ' + fmtMoney(state.betLevel);
-  $shuffle.classList.toggle('on', state.shuffle);
-  $betslider.disabled = state.shuffle;
-}
-$betslider.addEventListener('input', () => {
-  state.betLevel = +$betslider.value;
-  if (!state.shuffle) applyBetToBoard();
-  updateBetUI();
-});
-$shuffle.addEventListener('click', () => {
+$type.addEventListener('click', () => {
   initAudio();
-  state.shuffle = !state.shuffle;
-  applyBetToBoard(); // re-roll (or flatten) every idle tile's bet
-  updateBetUI();
+  state.typeIdx = (state.typeIdx + 1) % BALL_TYPES.length;
+  updateTypeUI();
   sfx.led();
 });
-updateBetUI();
-
-document.getElementById('refresh').addEventListener('click', () => {
-  initAudio();
-  sfx.flip();
-  clearStreak(null);
-  state.cells.forEach((cell, i) => {
-    cell.respawnAt = 0;
-    schedule(i * 55, () => {
-      if (cell.flip) { cell.face = cell.flip.toFace; cell.flip = null; }
-      cell.tile = newTile();
-      cell.result = null;
-      cell.respawnAt = 0;
-      startFlip(cell, 'front', cell.face === 'back' ? 1 : 2, 550);
-    });
-  });
-});
 updateHUD();
+updateTypeUI();
 
 // ---------------------------------------------------------------------------
-// Streak / pattern bonuses
-// ---------------------------------------------------------------------------
-function clearStreak(keep) {
-  state.streak.cells = keep ? [keep] : [];
-  state.streak.dir = null;
-  state.litCells.clear();
-  if (keep) state.litCells.add(cellKey(keep));
-}
-
-function streakOnWin(cell, prize) {
-  const s = state.streak;
-  const last = s.cells[s.cells.length - 1];
-  if (!last) {
-    s.cells = [cell];
-    state.litCells.add(cellKey(cell));
-  } else {
-    const dr = cell.r - last.r, dc = cell.c - last.c;
-    const adjacent = Math.abs(dr) <= 1 && Math.abs(dc) <= 1 && !(dr === 0 && dc === 0);
-    if (s.cells.length === 1 && adjacent) {
-      s.dir = [dr, dc];
-      s.cells.push(cell);
-      state.litCells.add(cellKey(cell));
-    } else if (s.cells.length > 1 && adjacent && dr === s.dir[0] && dc === s.dir[1]) {
-      s.cells.push(cell);
-      state.litCells.add(cellKey(cell));
-    } else {
-      clearStreak(cell); // pattern disrupted → only the newest winner stays lit
-      return;
-    }
-  }
-  const len = s.cells.length;
-  const diag = s.dir && s.dir[0] !== 0 && s.dir[1] !== 0;
-  if (len === GRID) {
-    awardBonus(diag ? BONUS.diag3 : BONUS.line3, prize);
-    clearStreak(null);
-  }
-}
-
-function awardBonus(bonus, lastPrize) {
-  const extra = (bonus.mult - 1) * lastPrize;
-  state.balance += extra;
-  state.lastWin = extra;
-  sfx.bonus();
-  state.effects.push({
-    type: 'banner', t0: state.now, dur: 2600,
-    text: `${bonus.label} BONUS ×${bonus.mult}`,
-    sub: `+${fmtMoney(extra)}`,
-  });
-  shake(0.8);
-  updateHUD();
-}
-
-// ---------------------------------------------------------------------------
-// Betting / settlement
-// ---------------------------------------------------------------------------
-function settle(cell, res) {
-  const win = res.prize > 0;
-  cell.result = { label: res.label, prize: res.prize, win };
-  startFlip(cell, 'back', 3, 900);
-  cell.respawnAt = state.now + 900 + RESPAWN_DELAY_MS;
-  sfx.flip();
-  const { cx, cy } = tileRect(cell.r, cell.c);
-  if (win) {
-    state.balance += res.prize;
-    state.lastWin = res.prize;
-    const big = res.prize >= 20 || (res.cost > 0 && res.prize / res.cost >= 10);
-    schedule(430, () => (big ? sfx.bigwin() : sfx.win()));
-    state.effects.push({ type: 'float', x: cx, y: cy, text: '+' + fmtMoney(res.prize), color: '#7dffb9', t0: state.now, dur: 1400 });
-    if (big) state.effects.push({ type: 'burst', x: cx, y: cy, t0: state.now, dur: 900 });
-    streakOnWin(cell, res.prize);
-  } else {
-    schedule(430, () => sfx.lose());
-    state.effects.push({ type: 'float', x: cx, y: cy, text: '×0', color: '#ff8d8d', t0: state.now, dur: 1000 });
-    clearStreak(null); // a losing hit breaks any pattern
-  }
-  updateHUD();
-}
-
-function charge(cost) {
-  if (cost > state.balance + 1e-9) {
-    toast('Not enough balance — tap +$100');
-    return false;
-  }
-  state.balance -= cost;
-  updateHUD();
-  return true;
-}
-
-// Returns true when the projectile was swallowed (no impact puff wanted).
-function handleHit(cell, fx, fy) {
-  const tile = cell.tile;
-  const res = hitTile(tile, fx, fy, state.now);
-  switch (res.kind) {
-    case 'none':
-      sfx.miss();
-      return false;
-    case 'interact':
-      if (res.startCost !== undefined) { // stepper game start
-        if (!charge(res.startCost)) { tile.active = false; tile.value = 0; return false; }
-      }
-      sfx[res.sound] ? sfx[res.sound]() : sfx.led();
-      return res.swallow === true;
-    case 'bet':
-      if (!res.prePaid && !charge(res.cost)) return false;
-      settle(cell, res);
-      return false;
-    case 'roulette-place': {
-      if (!charge(res.cost)) return false;
-      tile.reveal = { winner: res.winner, win: res.win };
-      sfx.led();
-      schedule(1100, () => {
-        tile.reveal = null;
-        tile.selected.clear();
-        settle(cell, {
-          cost: res.cost, prize: res.prize,
-          label: res.win ? `HIT ×${ROULETTE_MULT.toFixed(2)}` : 'WRONG BOX',
-        });
-      });
-      return false;
-    }
-    case 'randomizer':
-      if (!charge(res.cost)) return false;
-      resolveRandomizer(cell, res);
-      return false;
-  }
-  return false;
-}
-
-function resolveRandomizer(cell, res) {
-  const candidates = state.cells.filter((other) =>
-    other !== cell && other.face === 'front' && !other.flip && !other.respawnAt &&
-    !tileBusy(other.tile));
-  shuffle(candidates);
-  const chosen = candidates.slice(0, res.count);
-  sfx.flip();
-  let total = 0;
-  if (chosen.length === 0) {
-    total = instantOutcome({ type: 'standard' }, res.cost, state.now);
-  } else {
-    const stake = res.cost / chosen.length;
-    chosen.forEach((other, i) => {
-      const prize = instantOutcome(other.tile, stake, state.now);
-      total += prize;
-      schedule(250 + i * 220, () => {
-        other.result = { label: prize > 0 ? '+' + fmtMoney(prize) : '×0', prize, win: prize > 0 };
-        startFlip(other, 'back', 3, 800);
-        other.respawnAt = state.now + 800 + RESPAWN_DELAY_MS;
-        sfx.flip();
-      });
-    });
-  }
-  const totalPrize = total;
-  schedule(300 + chosen.length * 220, () => {
-    settle(cell, { cost: res.cost, prize: totalPrize, label: `${chosen.length || 1} TILES` });
-  });
-}
-
-function tileBusy(tile) {
-  return (tile.type === 'fill' && tile.fill > 0) ||
-    (tile.type === 'roulette' && (tile.selected.size > 0 || tile.reveal)) ||
-    (tile.type === 'stepper' && tile.active);
-}
-
-function shuffle(arr) {
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = (Math.random() * (i + 1)) | 0;
-    [arr[i], arr[j]] = [arr[j], arr[i]];
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Slingshot input (pointer events → works for touch and mouse alike)
+// Slingshot input (pointer events → touch and mouse alike)
 // ---------------------------------------------------------------------------
 canvas.addEventListener('pointerdown', (e) => {
   initAudio();
-  if (state.drag || !state.loaded) return;
-  if (e.clientY < board.bottom + 8) return; // must grab below the board
+  if (state.drag) return;
+  if (e.clientY < field.y0 + field.h + 6) return; // grab below the field
   canvas.setPointerCapture(e.pointerId);
   state.drag = { id: e.pointerId, px: e.clientX, py: e.clientY, buzzed: false };
   e.preventDefault();
@@ -374,12 +138,11 @@ canvas.addEventListener('pointermove', (e) => {
   if (!d || e.pointerId !== d.id) return;
   d.px = e.clientX;
   d.py = e.clientY;
-  if (pullPower() >= 0.98 && !d.buzzed) {
+  const p = pullPower();
+  if (p >= 0.98 && !d.buzzed) {
     d.buzzed = true;
-    if (navigator.vibrate) navigator.vibrate(18); // max-strength buzz
-  } else if (pullPower() < 0.9) {
-    d.buzzed = false;
-  }
+    if (navigator.vibrate) navigator.vibrate(18);
+  } else if (p < 0.9) d.buzzed = false;
   e.preventDefault();
 });
 function endDrag(e) {
@@ -389,7 +152,7 @@ function endDrag(e) {
   const from = pouchPos();
   const to = aimTarget();
   state.drag = null;
-  if (power > 0.1 && state.loaded) fire(from, to, power);
+  if (power > 0.1) fire(from, to, power); // rapid fire: never drop a pull
 }
 canvas.addEventListener('pointerup', endDrag);
 canvas.addEventListener('pointercancel', (e) => { if (state.drag && e.pointerId === state.drag.id) state.drag = null; });
@@ -406,22 +169,36 @@ function pullPower() {
   const p = pouchPos();
   return Math.hypot(p.x - sling.ax, p.y - sling.ay) / sling.maxPull;
 }
+// Aim is clamped to the field's entry zone: the slingshot can only shoot into play.
 function aimTarget() {
   const p = pouchPos();
-  const gain = (sling.ay - (board.top - H * 0.02)) / sling.maxPull;
-  return { x: sling.ax + (sling.ax - p.x) * gain, y: sling.ay + (sling.ay - p.y) * gain };
+  const e = field.entry;
+  const gain = (sling.ay - e.y0) / sling.maxPull;
+  const x = sling.ax + (sling.ax - p.x) * gain;
+  const y = sling.ay + (sling.ay - p.y) * gain;
+  return { x: Math.min(e.x1, Math.max(e.x0, x)), y: Math.min(e.y1, Math.max(e.y0, y)) };
 }
 
 function fire(from, to, power) {
+  const type = ballType();
+  if (type.bet > state.balance + 1e-9) {
+    toast(`Not enough balance for a ${type.name} ball — tap ${$topup.textContent}`);
+    return;
+  }
+  state.balance -= type.bet;
+  const mult = rollMultiplier(); // the isolated bet is decided here
   const dist = Math.hypot(to.x - from.x, to.y - from.y);
-  state.projectile = {
+  state.flights.push({
     x0: from.x, y0: from.y, x1: to.x, y1: to.y,
-    cx: (from.x + to.x) / 2, cy: Math.min(from.y, to.y) - (H * 0.05 + H * 0.07 * power),
-    t: 0, dur: 340 + 200 * Math.min(1, dist / (H * 0.8)), power,
-  };
+    cx: (from.x + to.x) / 2, cy: Math.min(from.y, to.y) - (H * 0.05 + H * 0.06 * power),
+    t: 0, dur: 320 + 200 * Math.min(1, dist / (H * 0.8)), power, type,
+    stake: type.bet, mult,
+  });
   state.loaded = false;
+  state.reloadAt = state.now + 120;
   sfx.fire(power);
-  shake(0.25 + 0.75 * power); // camera kick scales with shot strength
+  shake(0.25 + 0.75 * power);
+  updateHUD();
 }
 
 function shake(mag) {
@@ -429,24 +206,232 @@ function shake(mag) {
   state.shake.t = state.now;
 }
 
-function impact(x, y, power) {
+// A flight lands: the ball enters the field with the shot's momentum.
+function spawnBall(f) {
+  const dx = f.x1 - f.x0, dy = f.y1 - f.y0;
+  const len = Math.hypot(dx, dy) || 1;
+  const [s0, s1] = PHYS.entrySpeed;
+  const speed = field.h * (s0 + (s1 - s0) * f.power);
+  const r = PHYS.ballRadius * field.w;
+  const x = Math.min(field.x0 + field.w - r * 1.5, Math.max(field.x0 + r * 1.5, f.x1));
+  state.balls.push({
+    x, y: f.y1, vx: (dx / len) * speed, vy: (dy / len) * speed, r,
+    type: f.type, stake: f.stake, mult: f.mult, target: round2(f.mult * f.stake), total: 0,
+    born: state.now, cd: new Map(), slowSince: 0, dying: null, hits: 0,
+  });
   sfx.hit();
-  shake(0.15 * power);
-  state.reloadAt = state.now + 240;
-  const hit = screenToBoard(x, y);
-  if (!hit) {
-    state.effects.push({ type: 'puff', x, y, t0: state.now, dur: 500 });
-    sfx.miss();
+  state.effects.push({ type: 'puff', x, y: f.y1, t0: state.now, dur: 350 });
+}
+
+// ---------------------------------------------------------------------------
+// Scoring
+// ---------------------------------------------------------------------------
+function award(ball, comp, key, sign, x, y) {
+  const until = ball.cd.get(key) || 0;
+  if (state.now < until) return;
+  ball.cd.set(key, state.now + 140);
+  comp.flashT = state.now;
+  ball.hits++;
+  const a = awardFor(ball, sign);
+  if (a === 0) { sfx.miss(); return; }
+  ball.total = round2(ball.total + a);
+  (a > 0 ? sfx.fill : sfx.lose)();
+  state.effects.push({
+    type: 'float', x, y, text: (a > 0 ? '+' : '−') + fmtMoney(Math.abs(a)).slice(1),
+    color: a > 0 ? '#7dffb9' : '#ff8d8d', t0: state.now, dur: 1000, size: 15,
+  });
+}
+
+// The ball is swallowed by a pocket or hole: reveal the residual, pay out.
+function settle(ball, x, y, where) {
+  const res = residualFor(ball);
+  ball.total = ball.target;
+  ball.dying = { t0: state.now, x, y };
+  state.balance += ball.target;
+  state.settled.push({ target: ball.target, paid: ball.target, res, hits: ball.hits, life: Math.round(state.now - ball.born) });
+  const win = ball.target > 0;
+  if (win) state.lastWin = ball.target;
+  if (where) where.flashT = state.now;
+  const big = ball.mult >= 10;
+  if (win) schedule(150, () => (big ? sfx.bigwin() : sfx.win()));
+  else schedule(150, () => sfx.lose());
+  state.effects.push({
+    type: 'reveal', x, y: Math.min(y, field.y0 + field.h - 30), t0: state.now, dur: 2200,
+    line1: (res >= 0 ? '+' : '−') + fmtMoney(Math.abs(res)).slice(1),
+    line2: win ? `×${ball.mult} · ${fmtMoney(ball.target)}` : '×0',
+    color: win ? '#7dffb9' : '#ff8d8d',
+  });
+  if (big) {
+    state.effects.push({ type: 'banner', t0: state.now, dur: 2600, text: `${ball.type.name} BALL ×${ball.mult}`, sub: '+' + fmtMoney(ball.target).slice(1) });
+    state.effects.push({ type: 'burst', x, y, t0: state.now, dur: 900 });
+    shake(0.8);
+  }
+  updateHUD();
+}
+
+const pending = [];
+function schedule(delay, fn) { pending.push({ at: state.now + delay, fn }); }
+
+// ---------------------------------------------------------------------------
+// Physics
+// ---------------------------------------------------------------------------
+const SUBSTEP = 1 / 240;
+
+function stepPhysics(dtTotal) {
+  let dt = Math.min(dtTotal, 0.05);
+  while (dt > 0) {
+    const h = Math.min(SUBSTEP, dt);
+    for (const b of state.balls) if (!b.dying) integrate(b, h);
+    ballPairs();
+    dt -= h;
+  }
+  for (const b of state.balls) if (!b.dying) checkSensors(b);
+  state.balls = state.balls.filter((b) => !b.dying || state.now - b.dying.t0 < 360);
+}
+
+function integrate(b, h) {
+  const F = field;
+  const age = state.now - b.born;
+  let g = PHYS.gravity * F.h;
+  if (age > PHYS.softLifeMs) g *= 1 + (age - PHYS.softLifeMs) / 3000; // drain stuck balls
+  b.vy += g * h;
+  const drag = Math.max(0, 1 - PHYS.drag * h);
+  b.vx *= drag; b.vy *= drag;
+  const vmax = PHYS.maxSpeed * F.h;
+  const sp = Math.hypot(b.vx, b.vy);
+  if (sp > vmax) { b.vx *= vmax / sp; b.vy *= vmax / sp; }
+  b.prevY = b.y;
+  b.x += b.vx * h;
+  b.y += b.vy * h;
+
+  for (const s of F.walls) collideSegment(b, s, PHYS.restitutionWall);
+  for (const s of F.rails) {
+    if (collideSegment(b, s, PHYS.restitutionWall)) {
+      award(b, s, s, s.sign, (s.a.x + s.b.x) / 2, (s.a.y + s.b.y) / 2 - 14);
+    }
+  }
+  for (const p of F.pins) {
+    if (collideCircle(b, p, PHYS.restitutionPin, 0)) {
+      if (p.sign) award(b, p, p, p.sign, p.x, p.y - p.r - 10);
+      else p.flashT = state.now;
+    }
+  }
+  for (const bp of F.bumpers) {
+    if (collideCircle(b, bp, PHYS.restitutionBumper, PHYS.bumperKick * F.h)) {
+      award(b, bp, bp, bp.sign, bp.x, bp.y - bp.r - 10);
+      shake(0.12);
+    }
+  }
+  // hard bounds (safety net)
+  if (b.x < F.x0 + b.r) { b.x = F.x0 + b.r; b.vx = Math.abs(b.vx) * 0.5; }
+  if (b.x > F.x0 + F.w - b.r) { b.x = F.x0 + F.w - b.r; b.vx = -Math.abs(b.vx) * 0.5; }
+  if (b.y < F.y0 + b.r) { b.y = F.y0 + b.r; b.vy = Math.abs(b.vy) * 0.5; }
+
+  // stuck detection → nudge
+  if (Math.hypot(b.vx, b.vy) < 0.03 * F.h) {
+    if (!b.slowSince) b.slowSince = state.now;
+    else if (state.now - b.slowSince > 450) {
+      b.vx += (Math.random() - 0.5) * 0.4 * F.h;
+      b.vy -= 0.15 * F.h;
+      b.slowSince = 0;
+    }
+  } else b.slowSince = 0;
+}
+
+function collideSegment(b, s, e) {
+  const abx = s.b.x - s.a.x, aby = s.b.y - s.a.y;
+  const len2 = abx * abx + aby * aby;
+  let t = ((b.x - s.a.x) * abx + (b.y - s.a.y) * aby) / len2;
+  t = Math.max(0, Math.min(1, t));
+  const cx = s.a.x + abx * t, cy = s.a.y + aby * t;
+  let nx = b.x - cx, ny = b.y - cy;
+  const d = Math.hypot(nx, ny);
+  if (d >= b.r) return false;
+  if (d < 1e-6) { nx = -aby; ny = abx; const l = Math.hypot(nx, ny) || 1; nx /= l; ny /= l; }
+  else { nx /= d; ny /= d; }
+  const pen = b.r - d;
+  b.x += nx * pen; b.y += ny * pen;
+  const vn = b.vx * nx + b.vy * ny;
+  if (vn < 0) {
+    b.vx -= (1 + e) * vn * nx;
+    b.vy -= (1 + e) * vn * ny;
+    // tangential friction
+    const tx = -ny, ty = nx;
+    const vt = b.vx * tx + b.vy * ty;
+    b.vx -= vt * 0.04 * tx; b.vy -= vt * 0.04 * ty;
+  }
+  return true;
+}
+
+function collideCircle(b, c, e, kick) {
+  let nx = b.x - c.x, ny = b.y - c.y;
+  const d = Math.hypot(nx, ny);
+  const rr = b.r + c.r;
+  if (d >= rr) return false;
+  if (d < 1e-6) { nx = 0; ny = -1; } else { nx /= d; ny /= d; }
+  const pen = rr - d;
+  b.x += nx * pen; b.y += ny * pen;
+  const vn = b.vx * nx + b.vy * ny;
+  if (vn < 0) {
+    b.vx -= (1 + e) * vn * nx;
+    b.vy -= (1 + e) * vn * ny;
+  }
+  if (kick) { b.vx += nx * kick; b.vy += ny * kick; }
+  return true;
+}
+
+function ballPairs() {
+  const bs = state.balls;
+  for (let i = 0; i < bs.length; i++) {
+    const a = bs[i];
+    if (a.dying) continue;
+    for (let j = i + 1; j < bs.length; j++) {
+      const b = bs[j];
+      if (b.dying) continue;
+      let nx = b.x - a.x, ny = b.y - a.y;
+      const d = Math.hypot(nx, ny);
+      const rr = a.r + b.r;
+      if (d >= rr || d < 1e-6) continue;
+      nx /= d; ny /= d;
+      const pen = (rr - d) / 2;
+      a.x -= nx * pen; a.y -= ny * pen; b.x += nx * pen; b.y += ny * pen;
+      const rvn = (b.vx - a.vx) * nx + (b.vy - a.vy) * ny;
+      if (rvn < 0) {
+        const jimp = -(1 + 0.8) * rvn / 2;
+        a.vx -= jimp * nx; a.vy -= jimp * ny; b.vx += jimp * nx; b.vy += jimp * ny;
+      }
+    }
+  }
+}
+
+function checkSensors(b) {
+  const F = field;
+  // rollover lanes (crossed downward)
+  for (const l of F.lanes) {
+    if (b.prevY < l.y && b.y >= l.y && Math.abs(b.x - l.x) < l.halfW) {
+      award(b, l, l, l.sign, l.x, l.y - 12);
+    }
+  }
+  // holes
+  for (const hole of F.holes) {
+    if (Math.hypot(b.x - hole.x, b.y - hole.y) < hole.r * 0.62) {
+      settle(b, hole.x, hole.y, hole);
+      return;
+    }
+  }
+  // pockets
+  if (b.y > F.pocketLine) {
+    const i = Math.max(0, Math.min(4, Math.floor((b.x - F.x0) / (F.w / 5))));
+    const p = F.pockets[i];
+    settle(b, (p.x0 + p.x1) / 2, p.yTop + (F.pocketLine - p.yTop) / 2, p);
     return;
   }
-  const r = Math.floor(hit.v), c = Math.floor(hit.u);
-  const cell = cellAt(r, c);
-  if (cell.flip || cell.face === 'back') { // spinning / resolved → dud
-    state.effects.push({ type: 'puff', x, y, t0: state.now, dur: 400 });
-    return;
+  // hard life limit: force-settle into the nearest pocket
+  if (state.now - b.born > PHYS.hardLifeMs) {
+    const i = Math.max(0, Math.min(4, Math.floor((b.x - F.x0) / (F.w / 5))));
+    const p = F.pockets[i];
+    settle(b, (p.x0 + p.x1) / 2, p.yTop + (F.pocketLine - p.yTop) / 2, p);
   }
-  const swallowed = handleHit(cell, hit.u - c, hit.v - r);
-  if (!swallowed) state.effects.push({ type: 'puff', x, y, t0: state.now, dur: 400 });
 }
 
 // ---------------------------------------------------------------------------
@@ -454,43 +439,30 @@ function impact(x, y, power) {
 // ---------------------------------------------------------------------------
 function update() {
   const now = performance.now();
+  const dt = Math.min(0.05, (now - state.last) / 1000);
+  state.last = now;
   state.now = now;
 
-  // scheduled actions
-  for (let i = state.pending.length - 1; i >= 0; i--) {
-    if (now >= state.pending[i].at) {
-      const { fn } = state.pending.splice(i, 1)[0];
-      fn();
-    }
+  for (let i = pending.length - 1; i >= 0; i--) {
+    if (now >= pending[i].at) pending.splice(i, 1)[0].fn();
   }
 
-  // projectile flight (quadratic bezier with mid-air arc)
-  const p = state.projectile;
-  if (p) {
-    p.t += (now - (p.last || now - 16)) / p.dur;
-    p.last = now;
-    if (p.t >= 1) {
-      state.projectile = null;
-      impact(p.x1, p.y1, p.power);
+  // flights
+  for (let i = state.flights.length - 1; i >= 0; i--) {
+    const f = state.flights[i];
+    f.t += (dt * 1000) / f.dur;
+    if (f.t >= 1) {
+      state.flights.splice(i, 1);
+      spawnBall(f);
+      updateHUD();
     }
   }
-  if (!state.loaded && !state.projectile && now >= state.reloadAt) state.loaded = true;
+  if (!state.loaded && now >= state.reloadAt) state.loaded = true;
 
-  // flips
-  for (const cell of state.cells) {
-    if (cell.flip && now - cell.flip.start >= cell.flip.dur) {
-      cell.face = cell.flip.toFace;
-      cell.flip = null;
-    }
-    if (cell.respawnAt && now >= cell.respawnAt && !cell.flip) {
-      cell.tile = newTile();
-      cell.result = null;
-      cell.respawnAt = 0;
-      startFlip(cell, 'front', 1, 500);
-    }
-  }
+  const hadBalls = state.balls.length;
+  stepPhysics(dt);
+  if (state.balls.length !== hadBalls) updateHUD();
 
-  // effects cleanup
   state.effects = state.effects.filter((fx) => now - fx.t0 < fx.dur);
 }
 
@@ -505,22 +477,26 @@ function rr(x, y, w, h, r) {
   if (ctx.roundRect) ctx.roundRect(x, y, w, h, r);
   else ctx.rect(x, y, w, h);
 }
+function text(str, x, y, size, color, { bold = true, align = 'center', glow = 0 } = {}) {
+  ctx.font = `${bold ? '700' : '500'} ${size}px system-ui, -apple-system, sans-serif`;
+  ctx.textAlign = align;
+  ctx.textBaseline = 'middle';
+  if (glow) { ctx.shadowColor = color; ctx.shadowBlur = glow; }
+  ctx.fillStyle = color;
+  ctx.fillText(str, x, y);
+  ctx.shadowBlur = 0;
+}
+const flash = (comp, dur = 350) => (comp.flashT ? Math.max(0, 1 - (state.now - comp.flashT) / dur) : 0);
 
 function render() {
   const now = state.now;
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-
-  // camera shake
   const sAge = now - state.shake.t;
   if (state.shake.mag > 0 && sAge < 320) {
-    const decay = 1 - sAge / 320;
-    const m = state.shake.mag * decay;
+    const m = state.shake.mag * (1 - sAge / 320);
     ctx.translate((Math.random() * 2 - 1) * m, (Math.random() * 2 - 1) * m);
-  } else {
-    state.shake.mag = 0;
-  }
+  } else state.shake.mag = 0;
 
-  // background
   const bg = ctx.createLinearGradient(0, 0, 0, H);
   bg.addColorStop(0, '#0d1026');
   bg.addColorStop(0.55, '#131735');
@@ -528,71 +504,201 @@ function render() {
   ctx.fillStyle = bg;
   ctx.fillRect(-20, -20, W + 40, H + 40);
 
-  drawBoardPanel();
-  for (const cell of state.cells) drawCell(cell, now);
-  drawLitPerimeters(now);
+  drawField(now);
+  drawFlights();
+  drawBalls(now);
   drawSlingshot(now);
-  drawProjectile();
   drawEffects(now);
 }
 
-function drawBoardPanel() {
-  // jumbo-board backing (trapezoid for the 2.5D look)
-  const m = 14;
-  const tl = boardPt(0, 0), tr = boardPt(GRID, 0), bl = boardPt(0, GRID), br = boardPt(GRID, GRID);
+function fieldPath() {
+  const F = field;
   ctx.beginPath();
-  ctx.moveTo(tl.x - m, tl.y - m);
-  ctx.lineTo(tr.x + m, tr.y - m);
-  ctx.lineTo(br.x + m * 1.4, br.y + m);
-  ctx.lineTo(bl.x - m * 1.4, bl.y + m);
+  ctx.moveTo(F.x0, F.y0 + F.h);
+  ctx.lineTo(F.arch[0].x, F.arch[0].y);
+  for (const p of F.arch) ctx.lineTo(p.x, p.y);
+  ctx.lineTo(F.x0 + F.w, F.y0 + F.h);
   ctx.closePath();
-  const g = ctx.createLinearGradient(0, tl.y, 0, br.y);
-  g.addColorStop(0, '#1b2044');
-  g.addColorStop(1, '#232a58');
+}
+
+function drawField(now) {
+  const F = field;
+  // table surface
+  fieldPath();
+  const g = ctx.createLinearGradient(0, F.y0, 0, F.y0 + F.h);
+  g.addColorStop(0, '#1a1f45');
+  g.addColorStop(1, '#22285a');
   ctx.fillStyle = g;
   ctx.fill();
-  ctx.strokeStyle = 'rgba(120,140,255,0.35)';
+  ctx.save();
+  ctx.clip();
+  // subtle glow + grid
+  const rg = ctx.createRadialGradient(F.x0 + F.w / 2, F.y0 + F.h * 0.35, 10, F.x0 + F.w / 2, F.y0 + F.h * 0.35, F.w);
+  rg.addColorStop(0, 'rgba(90,140,255,0.16)');
+  rg.addColorStop(1, 'rgba(90,140,255,0)');
+  ctx.fillStyle = rg;
+  ctx.fillRect(F.x0, F.y0, F.w, F.h);
+  ctx.strokeStyle = 'rgba(120,150,255,0.07)';
+  ctx.lineWidth = 1;
+  for (let i = 1; i < 10; i++) {
+    ctx.beginPath(); ctx.moveTo(F.x0 + (F.w * i) / 10, F.y0); ctx.lineTo(F.x0 + (F.w * i) / 10, F.y0 + F.h); ctx.stroke();
+  }
+  for (let i = 1; i < 14; i++) {
+    ctx.beginPath(); ctx.moveTo(F.x0, F.y0 + (F.h * i) / 14); ctx.lineTo(F.x0 + F.w, F.y0 + (F.h * i) / 14); ctx.stroke();
+  }
+
+  // entry zone hint while aiming
+  if (state.drag) {
+    const e = F.entry;
+    ctx.setLineDash([6, 6]);
+    ctx.strokeStyle = 'rgba(64,224,255,0.35)';
+    ctx.lineWidth = 1.5;
+    rr(e.x0, e.y0, e.x1 - e.x0, e.y1 - e.y0, 10);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // pockets
+  for (const p of F.pockets) {
+    const f = flash(p, 900);
+    rr(p.x0 + 4, p.yTop + 4, p.x1 - p.x0 - 8, F.y0 + F.h - p.yTop - 4, 6);
+    ctx.fillStyle = f ? `rgba(255,214,90,${0.25 + 0.5 * f})` : '#0b0d20';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(120,150,255,0.4)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    text('?', (p.x0 + p.x1) / 2, (p.yTop + F.y0 + F.h) / 2 + 2, Math.min(28, F.w * 0.06), f ? '#fff' : 'rgba(255,255,255,0.35)', { glow: f ? 12 : 0 });
+  }
+
+  // holes
+  for (const hole of F.holes) {
+    const f = flash(hole, 900);
+    ctx.beginPath();
+    ctx.arc(hole.x, hole.y, hole.r, 0, Math.PI * 2);
+    const hg = ctx.createRadialGradient(hole.x, hole.y, hole.r * 0.2, hole.x, hole.y, hole.r);
+    hg.addColorStop(0, '#05060f');
+    hg.addColorStop(1, f ? `rgba(255,214,90,${0.6 * f})` : '#161a3a');
+    ctx.fillStyle = hg;
+    ctx.fill();
+    ctx.strokeStyle = f ? '#ffd65a' : 'rgba(160,190,255,0.55)';
+    ctx.lineWidth = 2;
+    ctx.shadowColor = '#ffd65a';
+    ctx.shadowBlur = 14 * f;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    text('?', hole.x, hole.y + 1, hole.r * 1.1, 'rgba(255,255,255,0.45)');
+  }
+
+  // rollover lanes
+  for (const l of F.lanes) {
+    const f = flash(l, 500);
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = f ? `rgba(125,255,185,${0.5 + 0.5 * f})` : 'rgba(125,255,185,0.35)';
+    ctx.lineWidth = f ? 3 : 1.5;
+    ctx.shadowColor = '#7dffb9';
+    ctx.shadowBlur = 12 * f;
+    ctx.beginPath();
+    ctx.moveTo(l.x - l.halfW, l.y);
+    ctx.lineTo(l.x + l.halfW, l.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.shadowBlur = 0;
+    text('+', l.x, l.y - 11, 11, 'rgba(125,255,185,0.8)');
+  }
+
+  // walls
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = 'rgba(110,200,255,0.85)';
+  ctx.lineWidth = 3;
+  ctx.shadowColor = '#40e0ff';
+  ctx.shadowBlur = 8;
+  ctx.beginPath();
+  for (const s of F.walls) { ctx.moveTo(s.a.x, s.a.y); ctx.lineTo(s.b.x, s.b.y); }
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // signed rails
+  for (const s of F.rails) {
+    const f = flash(s);
+    const col = s.sign > 0 ? '#39d97a' : '#e0455a';
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 6 + 3 * f;
+    ctx.shadowColor = col;
+    ctx.shadowBlur = 10 + 16 * f;
+    ctx.beginPath(); ctx.moveTo(s.a.x, s.a.y); ctx.lineTo(s.b.x, s.b.y); ctx.stroke();
+    ctx.shadowBlur = 0;
+    const mx = (s.a.x + s.b.x) / 2, my = (s.a.y + s.b.y) / 2;
+    text(s.sign > 0 ? '+' : '−', mx + (s.a.x < F.x0 + F.w / 2 ? 14 : -14), my - 10, 14, col, { glow: 6 });
+  }
+
+  // pins (signed kicker pins are tinted green/red)
+  for (const p of F.pins) {
+    const f = flash(p, 250);
+    const base = p.sign > 0 ? '#39d97a' : p.sign < 0 ? '#e0455a' : '#9fb4e8';
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+    ctx.fillStyle = f ? '#ffffff' : base;
+    ctx.shadowColor = p.sign ? base : '#cfe0ff';
+    ctx.shadowBlur = (p.sign ? 9 : 6) + 10 * f;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    if (p.sign) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+  }
+
+  // bumpers
+  for (const bp of F.bumpers) {
+    const f = flash(bp);
+    const col = bp.sign > 0 ? '#39d97a' : '#e0455a';
+    if (f) {
+      ctx.beginPath();
+      ctx.arc(bp.x, bp.y, bp.r + 18 * (1 - f), 0, Math.PI * 2);
+      ctx.strokeStyle = col;
+      ctx.globalAlpha = f;
+      ctx.lineWidth = 3;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+    ctx.beginPath();
+    ctx.arc(bp.x, bp.y, bp.r, 0, Math.PI * 2);
+    const bgr = ctx.createRadialGradient(bp.x - bp.r * 0.3, bp.y - bp.r * 0.3, bp.r * 0.1, bp.x, bp.y, bp.r);
+    bgr.addColorStop(0, f ? '#ffffff' : (bp.sign > 0 ? '#8affc0' : '#ff9aa8'));
+    bgr.addColorStop(1, bp.sign > 0 ? '#1d8a4a' : '#8f1f30');
+    ctx.fillStyle = bgr;
+    ctx.shadowColor = col;
+    ctx.shadowBlur = 12 + 20 * f;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    text(bp.sign > 0 ? '+' : '−', bp.x, bp.y + 1, bp.r * 1.3, '#fff', { glow: 4 });
+  }
+  ctx.restore();
+
+  // field outline
+  fieldPath();
+  ctx.strokeStyle = 'rgba(120,150,255,0.45)';
   ctx.lineWidth = 2;
   ctx.stroke();
 }
 
-function drawCell(cell, now) {
-  const { cx, cy, w, h } = tileRect(cell.r, cell.c);
-  let face = cell.face;
-  let k = 1;
-  if (cell.flip) {
-    const t = Math.min(1, (now - cell.flip.start) / cell.flip.dur);
-    const angle = easeOutCubic(t) * cell.flip.halfTurns * Math.PI;
-    k = Math.max(0.04, Math.abs(Math.cos(angle)));
-    const half = Math.floor((angle + Math.PI / 2) / Math.PI);
-    const flipped = half % 2 === 1;
-    face = flipped
-      ? (cell.flip.fromFace === 'front' ? 'back' : 'front')
-      : cell.flip.fromFace;
-  }
-  ctx.save();
-  ctx.translate(cx, cy);
-  ctx.scale((w / 100) * k, h / 100);
-  if (face === 'back' || cell.result || cell.tile) {
-    if (face === 'front') drawTileFront(cell.tile, now);
-    else drawTileBack(cell);
-  }
-  ctx.restore();
-}
-
-// Tile faces are drawn in a 100×100 unit space centred on the origin.
-function tileBase(color, borderColor) {
-  rr(-50, -50, 100, 100, 10);
-  const g = ctx.createLinearGradient(0, -50, 0, 50);
-  g.addColorStop(0, shade(color, 1.25));
-  g.addColorStop(1, shade(color, 0.75));
+function drawBallSprite(x, y, radius, type, { glow = 10 } = {}) {
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, Math.PI * 2);
+  const g = ctx.createRadialGradient(x - radius / 3, y - radius / 3, radius / 5, x, y, radius);
+  g.addColorStop(0, type.hi);
+  g.addColorStop(0.55, type.color);
+  g.addColorStop(1, shade(type.color, 0.65));
   ctx.fillStyle = g;
+  ctx.shadowColor = type.color;
+  ctx.shadowBlur = glow;
   ctx.fill();
-  ctx.strokeStyle = borderColor || 'rgba(255,255,255,0.28)';
-  ctx.lineWidth = 2.5;
-  ctx.stroke();
+  ctx.shadowBlur = 0;
 }
-
 const shadeCache = new Map();
 function shade(hex, f) {
   const key = hex + f;
@@ -604,231 +710,53 @@ function shade(hex, f) {
   return out;
 }
 
-function text(str, x, y, size, color, { bold = true, align = 'center', glow = 0 } = {}) {
-  ctx.font = `${bold ? '700' : '500'} ${size}px system-ui, -apple-system, sans-serif`;
-  ctx.textAlign = align;
-  ctx.textBaseline = 'middle';
-  if (glow) { ctx.shadowColor = color; ctx.shadowBlur = glow; }
-  ctx.fillStyle = color;
-  ctx.fillText(str, x, y);
-  ctx.shadowBlur = 0;
+function bez(f, t) {
+  return {
+    x: (1 - t) * (1 - t) * f.x0 + 2 * (1 - t) * t * f.cx + t * t * f.x1,
+    y: (1 - t) * (1 - t) * f.y0 + 2 * (1 - t) * t * f.cy + t * t * f.y1,
+  };
 }
 
-function drawTileFront(tile, now) {
-  const def = tile.def || TYPES[tile.type];
-  tileBase(def.color);
-
-  // question-mark watermark
-  text('?', 0, 6, 64, 'rgba(255,255,255,0.10)');
-
-  // type name
-  text(def.name, 0, -40, tile.type === 'double' ? 8 : 9.5, 'rgba(255,255,255,0.85)');
-
-  // glowing cost (pulses)
-  const pulse = 6 + 4 * Math.sin(now / 300);
-  const costLabel = tileCostLabel(tile);
-
-  switch (tile.type) {
-    case 'standard':
-      text(costLabel, 0, 8, 26, def.accent, { glow: pulse });
-      break;
-    case 'safe':
-      text(costLabel, 0, 4, 26, def.accent, { glow: pulse });
-      text('HIGH HIT RATE', 0, 32, 8, 'rgba(255,255,255,0.6)');
-      break;
-    case 'wild':
-      text(costLabel, 0, 4, 26, def.accent, { glow: pulse });
-      text('UP TO ×100', 0, 32, 8, 'rgba(255,255,255,0.6)');
-      break;
-    case 'jackpot':
-      text(costLabel, 0, 2, 24, def.accent, { glow: pulse });
-      text('★ ×500 ★', 0, 30, 11, '#ffd94d', { glow: 4 });
-      break;
-    case 'double':
-      text(costLabel, 0, 2, 24, def.accent, { glow: pulse });
-      text('×2 OR ×0', 0, 30, 11, 'rgba(255,255,255,0.75)');
-      break;
-    case 'hilo': {
-      const v = tile.variant;
-      text(costLabel, 0, -16, 20, def.accent, { glow: pulse });
-      text(`▲ ×${v.high}  ${Math.round(v.pHigh * 100)}%`, 0, 12, 11, '#9dffb0');
-      text(`▼ ×${v.low}  ${Math.round((1 - v.pHigh) * 100)}%`, 0, 30, 11, '#ffb3a0');
-      break;
+function drawFlights() {
+  const r0 = 9, r1 = PHYS.ballRadius * field.w;
+  for (const f of state.flights) {
+    const t = Math.min(1, f.t);
+    ctx.globalAlpha = 0.35;
+    for (let i = 1; i <= 3; i++) {
+      const p = bez(f, Math.max(0, t - i * 0.05));
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, (r0 + (r1 - r0) * t) * (1 - i * 0.2), 0, Math.PI * 2);
+      ctx.fillStyle = f.type.color;
+      ctx.fill();
     }
-    case 'fill':
-      drawFillFront(tile, def, pulse, now);
-      break;
-    case 'risk':
-      drawRiskFront(tile, def, now, pulse);
-      break;
-    case 'randomizer':
-      text(String(tile.count), 0, 2, 40, def.accent, { glow: pulse });
-      text('RANDOM TILES', 0, 32, 8.5, 'rgba(255,255,255,0.7)');
-      text(costLabel, 0, -22, 12, '#fff', { glow: 3 });
-      break;
-    case 'roulette':
-      drawRouletteFront(tile, def, pulse);
-      break;
-    case 'stepper':
-      drawStepperFront(tile, def, pulse);
-      break;
-  }
-}
-
-function drawFillFront(tile, def, pulse, now) {
-  // electronic counter
-  rr(-26, -26, 52, 18, 3);
-  ctx.fillStyle = '#0a0a12';
-  ctx.fill();
-  text(fmtMoney(tile.fill), 0, -17, 12, '#7dff8a', { glow: 3 });
-  text(`+${fmtMoney(tile.increment)}/shot`, 0, 0, 9, '#fff');
-
-  // doggy-door: dark chute behind a top-hinged flap that swings open on a hit
-  rr(-18, 9, 36, 36, 4);
-  ctx.fillStyle = '#0a0502';
-  ctx.fill();
-  ctx.strokeStyle = def.accent;
-  ctx.lineWidth = 2;
-  ctx.stroke();
-
-  const d = now - (tile.doorT || -1e9);
-  let open = 0; // 0 = closed, 1 = fully swung inward
-  if (d >= 0 && d < 480) open = d < 200 ? d / 200 : Math.max(0, 1 - (d - 200) / 280);
-
-  // ball dropping through the opening
-  if (d >= 0 && d < 260) {
-    const t = d / 260;
-    ctx.globalAlpha = 1 - t * t;
-    ctx.beginPath();
-    ctx.arc(0, 16 + 22 * t, 7 * (1 - 0.45 * t), 0, Math.PI * 2);
-    ctx.fillStyle = '#ffd65a';
-    ctx.fill();
     ctx.globalAlpha = 1;
-  }
-
-  // flap (foreshortens as it swings in), hinged at the top of the slot
-  const flapH = Math.max(3, 32 * (1 - 0.92 * open));
-  rr(-16, 11, 32, flapH, 3);
-  const fg = ctx.createLinearGradient(0, 11, 0, 11 + flapH);
-  fg.addColorStop(0, shade(def.color, 0.55 + 0.5 * (1 - open)));
-  fg.addColorStop(1, shade(def.color, 0.35));
-  ctx.fillStyle = fg;
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(255,192,125,0.55)';
-  ctx.lineWidth = 1.4;
-  ctx.stroke();
-  if (open < 0.4) {
-    ctx.globalAlpha = 1 - open / 0.4;
-    text('FEED', 0, 11 + flapH / 2, 9, def.accent, { glow: pulse * 0.5 });
-    ctx.globalAlpha = 1;
+    const p = bez(f, t);
+    drawBallSprite(p.x, p.y, r0 + (r1 - r0) * t, f.type);
   }
 }
 
-function drawRiskFront(tile, def, now, pulse) {
-  const r = riskPosition(tile, now);
-  const mult = 1 + (RISK_MAX_MULT - 1) * r;
-  text(fmtMoney(tile.cost), 0, -24, 16, def.accent, { glow: pulse });
-  // slider track
-  rr(-38, 2, 76, 10, 5);
-  const g = ctx.createLinearGradient(-38, 0, 38, 0);
-  g.addColorStop(0, '#2f9e57');
-  g.addColorStop(0.55, '#e0b13a');
-  g.addColorStop(1, '#d0344a');
-  ctx.fillStyle = g;
-  ctx.fill();
-  // marker
-  const mx = -38 + 76 * r;
-  rr(mx - 3, -2, 6, 18, 3);
-  ctx.fillStyle = '#fff';
-  ctx.shadowColor = '#fff';
-  ctx.shadowBlur = 6;
-  ctx.fill();
-  ctx.shadowBlur = 0;
-  text(`${(r * 100) | 0}%  ×${mult.toFixed(1)}`, 0, 28, 11, '#fff');
-  text(`win ${(TILE_RTP / mult * 100).toFixed(mult > 10 ? 1 : 0)}%`, 0, 40, 7.5, 'rgba(255,255,255,0.65)');
-}
-
-function drawRouletteFront(tile, def, pulse) {
-  text(tileCostLabel(tile), 0, -29, 11, def.accent, { glow: pulse });
-  for (let i = 0; i < 9; i++) {
-    const rect = rouletteCubeRect(i);
-    const x = rect.x * 100 - 50, y = rect.y * 100 - 50, w = rect.w * 100, h = rect.h * 100;
-    const sel = tile.selected.has(i);
-    let fill = sel ? '#e8c33a' : '#2a1020';
-    let glow = sel ? 8 : 0;
-    if (tile.reveal && tile.reveal.winner === i) {
-      fill = tile.reveal.win ? '#39d97a' : '#e0455a';
-      glow = 12;
+function drawBalls(now) {
+  for (const b of state.balls) {
+    let r = b.r;
+    let x = b.x, y = b.y;
+    if (b.dying) {
+      const t = Math.min(1, (now - b.dying.t0) / 360);
+      r = b.r * (1 - t);
+      x = b.x + (b.dying.x - b.x) * t;
+      y = b.y + (b.dying.y - b.y) * t;
+      if (r <= 0.5) continue;
     }
-    rr(x, y, w, h, 3);
-    if (glow) { ctx.shadowColor = fill; ctx.shadowBlur = glow; }
-    ctx.fillStyle = fill;
-    ctx.fill();
-    ctx.shadowBlur = 0;
-    ctx.strokeStyle = 'rgba(255,255,255,0.3)';
-    ctx.lineWidth = 1.2;
-    ctx.stroke();
-  }
-  text(`win ×${ROULETTE_MULT.toFixed(2)}`, 0, 44, 7, 'rgba(255,255,255,0.7)');
-}
-
-function drawStepperFront(tile, def, pulse) {
-  // two electronic counters: cash-out value | next-step success %
-  rr(-42, -35, 40, 15, 3); ctx.fillStyle = '#0a0a12'; ctx.fill();
-  rr(2, -35, 40, 15, 3); ctx.fillStyle = '#0a0a12'; ctx.fill();
-  const left = tile.active ? fmtMoney(tile.value) : fmtMoney(tile.cost);
-  const right = tile.active ? `${Math.round(stepperStepProb(tile.step + 1) * 100)}%` : 'COST';
-  text(left, -22, -27.5, 9.5, '#7dff8a', { glow: 3 });
-  text(right, 22, -27.5, 9.5, tile.active ? '#ffd94d' : '#8a8fa8', { glow: tile.active ? 3 : 0 });
-  // single STEP button (matches the hit zone: x 0.2–0.8, y 0.4–0.72)
-  rr(-30, -10, 60, 32, 7);
-  ctx.fillStyle = tile.active ? '#3d9e46' : '#2c2f6e';
-  ctx.fill();
-  ctx.strokeStyle = def.accent; ctx.lineWidth = 2; ctx.stroke();
-  text(tile.active ? 'STEP ▲' : 'START', 0, 6, 12, '#fff', { glow: pulse * 0.4 });
-  if (tile.active) {
-    text('HIT OUTSIDE = CASH OUT', 0, 33, 6.5, '#ffd94d', { glow: 2 });
-    text(`step ${tile.step}`, 0, 44, 7, 'rgba(255,255,255,0.7)');
-  } else {
-    text('hit anywhere to start', 0, 33, 7, 'rgba(255,255,255,0.65)');
-  }
-}
-
-function drawTileBack(cell) {
-  const res = cell.result;
-  const win = res && res.win;
-  tileBase(win ? '#1d6b3f' : '#3a2030', win ? '#7dffb9' : 'rgba(255,255,255,0.2)');
-  if (!res) { text('•', 0, 0, 20, 'rgba(255,255,255,0.4)'); return; }
-  if (win) {
-    text('WIN', 0, -26, 14, '#c9ffdd');
-    text(fmtMoney(res.prize), 0, 2, 24, '#7dffb9', { glow: 8 });
-    text(res.label, 0, 30, 11, 'rgba(255,255,255,0.85)');
-  } else {
-    text('✕', 0, -18, 26, '#ff8d8d');
-    text(res.label, 0, 16, 12, 'rgba(255,255,255,0.85)');
-  }
-}
-
-function drawLitPerimeters(now) {
-  if (!state.litCells.size) return;
-  const pulse = 0.55 + 0.45 * Math.sin(now / 200);
-  for (const key of state.litCells) {
-    const [r, c] = key.split(',').map(Number);
-    const { cx, cy, w, h } = tileRect(r, c);
-    ctx.save();
-    ctx.translate(cx, cy);
-    rr(-w / 2 - 3, -h / 2 - 3, w + 6, h + 6, 12);
-    ctx.strokeStyle = `rgba(255,214,90,${0.5 + 0.5 * pulse})`;
-    ctx.lineWidth = 3.5;
-    ctx.shadowColor = '#ffd65a';
-    ctx.shadowBlur = 14 * pulse + 6;
-    ctx.stroke();
-    ctx.restore();
+    drawBallSprite(x, y, r, b.type);
+    if (!b.dying) {
+      const lbl = fmtMoney(b.total);
+      const col = b.total > 0 ? '#7dffb9' : b.total < 0 ? '#ff8d8d' : 'rgba(255,255,255,0.85)';
+      text(lbl, x, y - b.r - 10, 12, col, { glow: 6 });
+    }
   }
 }
 
 // ---------------------------------------------------------------------------
-// Slingshot + projectile
+// Slingshot
 // ---------------------------------------------------------------------------
 function drawSlingshot(now) {
   const pouch = pouchPos();
@@ -836,11 +764,10 @@ function drawSlingshot(now) {
   const forkY = sling.ay - S * 0.05;
   const forkL = { x: sling.ax - S * 0.07, y: forkY };
   const forkR = { x: sling.ax + S * 0.07, y: forkY };
-  const baseY = Math.min(H - 8, sling.ay + S * 0.1);
-  const crotchY = sling.ay + S * 0.04;
+  const baseY = Math.min(H - 8, sling.ay + S * 0.085);
+  const crotchY = sling.ay + S * 0.035;
   ctx.lineCap = 'round';
 
-  // launcher frame: dark alloy Y with a neon edge
   const framePath = () => {
     ctx.beginPath();
     ctx.moveTo(sling.ax, baseY);
@@ -862,7 +789,6 @@ function drawSlingshot(now) {
   ctx.stroke();
   ctx.shadowBlur = 0;
 
-  // base plate
   rr(sling.ax - S * 0.035, baseY - 4, S * 0.07, 8, 4);
   ctx.fillStyle = '#252c52';
   ctx.fill();
@@ -870,7 +796,6 @@ function drawSlingshot(now) {
   ctx.lineWidth = 1.5;
   ctx.stroke();
 
-  // energy bands from the emitter tips to the pouch
   const bandTo = state.loaded ? pouch : { x: sling.ax, y: sling.ay + 6 };
   for (const tip of [forkL, forkR]) {
     const bg = ctx.createLinearGradient(tip.x, tip.y, bandTo.x, bandTo.y);
@@ -886,8 +811,6 @@ function drawSlingshot(now) {
     ctx.stroke();
     ctx.shadowBlur = 0;
   }
-
-  // glowing emitter nodes on the fork tips
   for (const tip of [forkL, forkR]) {
     ctx.beginPath();
     ctx.arc(tip.x, tip.y, 5, 0, Math.PI * 2);
@@ -898,7 +821,6 @@ function drawSlingshot(now) {
     ctx.shadowBlur = 0;
   }
 
-  // pouch: glowing cradle ring holding the energy ball
   if (state.loaded) {
     ctx.beginPath();
     ctx.arc(pouch.x, pouch.y - 3, 13, Math.PI * 0.15, Math.PI * 0.85);
@@ -908,28 +830,22 @@ function drawSlingshot(now) {
     ctx.shadowBlur = 8;
     ctx.stroke();
     ctx.shadowBlur = 0;
-    drawBall(pouch.x, pouch.y - 5, 9);
+    drawBallSprite(pouch.x, pouch.y - 5, 9, ballType());
   }
 
-  // aim preview + power meter while dragging
   if (state.drag && state.loaded) {
     const power = pullPower();
     if (power > 0.08) {
       const to = aimTarget();
-      const cxp = (pouch.x + to.x) / 2;
-      const cyp = Math.min(pouch.y, to.y) - (H * 0.05 + H * 0.07 * power);
-      // filled trajectory (same bezier the shot flies)
+      const f = { x0: pouch.x, y0: pouch.y, x1: to.x, y1: to.y, cx: (pouch.x + to.x) / 2, cy: Math.min(pouch.y, to.y) - (H * 0.05 + H * 0.06 * power) };
       ctx.fillStyle = 'rgba(140,225,255,0.8)';
-      const n = 14;
-      for (let i = 1; i <= n; i++) {
-        const t = i / (n + 1);
-        const x = (1 - t) * (1 - t) * pouch.x + 2 * (1 - t) * t * cxp + t * t * to.x;
-        const y = (1 - t) * (1 - t) * pouch.y + 2 * (1 - t) * t * cyp + t * t * to.y;
+      for (let i = 1; i <= 14; i++) {
+        const t = i / 15;
+        const p = bez(f, t);
         ctx.beginPath();
-        ctx.arc(x, y, 2.8 - 1.4 * t, 0, Math.PI * 2);
+        ctx.arc(p.x, p.y, 2.8 - 1.4 * t, 0, Math.PI * 2);
         ctx.fill();
       }
-      // landing reticle: the exact impact point
       const pu = 0.6 + 0.4 * Math.sin(now / 140);
       ctx.strokeStyle = 'rgba(64,224,255,0.95)';
       ctx.lineWidth = 2.2;
@@ -947,9 +863,8 @@ function drawSlingshot(now) {
       ctx.shadowBlur = 0;
       ctx.beginPath();
       ctx.arc(to.x, to.y, 2.6, 0, Math.PI * 2);
-      ctx.fillStyle = '#ffffff';
+      ctx.fillStyle = '#fff';
       ctx.fill();
-      // power arc around pouch
       ctx.beginPath();
       ctx.arc(pouch.x, pouch.y, 22, -Math.PI / 2, -Math.PI / 2 + power * Math.PI * 2);
       ctx.strokeStyle = power >= 0.98 ? '#ff6a6a' : '#ffd65a';
@@ -957,42 +872,6 @@ function drawSlingshot(now) {
       ctx.stroke();
     }
   }
-}
-
-function drawBall(x, y, radius) {
-  ctx.beginPath();
-  ctx.arc(x, y, radius, 0, Math.PI * 2);
-  const g = ctx.createRadialGradient(x - radius / 3, y - radius / 3, radius / 5, x, y, radius);
-  g.addColorStop(0, '#fff6d8');
-  g.addColorStop(0.55, '#ffd65a');
-  g.addColorStop(1, '#d09a2e');
-  ctx.fillStyle = g;
-  ctx.shadowColor = '#ffd65a';
-  ctx.shadowBlur = 10;
-  ctx.fill();
-  ctx.shadowBlur = 0;
-}
-
-function drawProjectile() {
-  const p = state.projectile;
-  if (!p) return;
-  const t = Math.min(1, p.t);
-  const x = (1 - t) * (1 - t) * p.x0 + 2 * (1 - t) * t * p.cx + t * t * p.x1;
-  const y = (1 - t) * (1 - t) * p.y0 + 2 * (1 - t) * t * p.cy + t * t * p.y1;
-  const radius = 9 - 3.8 * t; // shrinks as it travels into the board (depth)
-  // trail
-  ctx.globalAlpha = 0.35;
-  for (let i = 1; i <= 3; i++) {
-    const tt = Math.max(0, t - i * 0.05);
-    const tx = (1 - tt) * (1 - tt) * p.x0 + 2 * (1 - tt) * tt * p.cx + tt * tt * p.x1;
-    const ty = (1 - tt) * (1 - tt) * p.y0 + 2 * (1 - tt) * tt * p.cy + tt * tt * p.y1;
-    ctx.beginPath();
-    ctx.arc(tx, ty, radius * (1 - i * 0.2), 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(255,220,140,0.5)';
-    ctx.fill();
-  }
-  ctx.globalAlpha = 1;
-  drawBall(x, y, radius);
 }
 
 // ---------------------------------------------------------------------------
@@ -1003,7 +882,7 @@ function drawEffects(now) {
     const t = Math.min(1, (now - fx.t0) / fx.dur);
     if (fx.type === 'float') {
       ctx.globalAlpha = 1 - t * t;
-      text(fx.text, fx.x, fx.y - 30 * easeOutCubic(t), 18, fx.color, { glow: 8 });
+      text(fx.text, fx.x, fx.y - 26 * easeOutCubic(t), fx.size || 18, fx.color, { glow: 8 });
       ctx.globalAlpha = 1;
     } else if (fx.type === 'puff') {
       ctx.globalAlpha = (1 - t) * 0.5;
@@ -1013,11 +892,25 @@ function drawEffects(now) {
       ctx.lineWidth = 2;
       ctx.stroke();
       ctx.globalAlpha = 1;
+    } else if (fx.type === 'reveal') {
+      const inT = Math.min(1, t * 6);
+      const outT = Math.max(0, (t - 0.75) * 4);
+      ctx.globalAlpha = inT * (1 - outT);
+      const y = fx.y - 22 * easeOutCubic(inT);
+      rr(fx.x - 58, y - 24, 116, 46, 8);
+      ctx.fillStyle = 'rgba(8,10,28,0.9)';
+      ctx.fill();
+      ctx.strokeStyle = fx.color;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      text(fx.line1, fx.x, y - 9, 16, fx.color, { glow: 8 });
+      text(fx.line2, fx.x, y + 11, 11, 'rgba(255,255,255,0.85)');
+      ctx.globalAlpha = 1;
     } else if (fx.type === 'burst') {
       ctx.globalAlpha = 1 - t;
-      for (let i = 0; i < 10; i++) {
-        const a = (i / 10) * Math.PI * 2 + fx.t0;
-        const d = 12 + 55 * easeOutCubic(t);
+      for (let i = 0; i < 12; i++) {
+        const a = (i / 12) * Math.PI * 2 + fx.t0;
+        const d = 12 + 60 * easeOutCubic(t);
         ctx.beginPath();
         ctx.arc(fx.x + Math.cos(a) * d, fx.y + Math.sin(a) * d, 3 * (1 - t) + 1, 0, Math.PI * 2);
         ctx.fillStyle = i % 2 ? '#ffd65a' : '#7dffb9';
@@ -1028,9 +921,8 @@ function drawEffects(now) {
       const inT = Math.min(1, t * 5);
       const outT = Math.max(0, (t - 0.8) * 5);
       ctx.globalAlpha = inT * (1 - outT);
-      const y = H * 0.33;
       ctx.save();
-      ctx.translate(W / 2, y);
+      ctx.translate(W / 2, H * 0.3);
       ctx.scale(0.8 + 0.2 * easeInOut(inT), 0.8 + 0.2 * easeInOut(inT));
       text(fx.text, 0, -14, 26, '#ffd65a', { glow: 18 });
       text(fx.sub, 0, 22, 32, '#7dffb9', { glow: 14 });
