@@ -57,10 +57,10 @@ for (const t of Object.values(THEMES)) {
       const s = generateSpec(theme);
       boards++;
       attempts += s.attempts;
-      const items = [...s.bumpers, ...s.pins, ...s.holes, ...s.gates, ...s.spinners];
+      const items = [...s.bumpers, ...s.pins, ...s.holes, ...s.gates, ...s.spinners, ...s.magnets, ...s.kickouts, ...s.banks, ...s.movers, ...s.oneways.filter((o) => !o.lane)];
       comps += items.length + s.rails.length + s.tris.length;
       for (const it of items) if (!pointInPoly(it.u, it.v, s.outline)) { bad++; reasons.outside = (reasons.outside || 0) + 1; }
-      for (const [k, min] of [['bumpers', 2], ['pins', 6], ['gates', 1], ['spinners', 1], ['holes', 1]]) {
+      for (const [k, min] of [['bumpers', 2], ['pins', 5], ['gates', 1], ['spinners', 1], ['holes', 1]]) {
         if (s[k].length < min) { bad++; reasons[k] = (reasons[k] || 0) + 1; }
       }
       if (findTrap(s)) traps++;

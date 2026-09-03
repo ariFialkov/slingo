@@ -80,7 +80,7 @@ export const PHYS = {
   drag: 0.08,          // per second
   maxSpeed: 2.6,       // × fieldHeight / s
   ballRadius: 0.017,   // × fieldWidth
-  entrySpeed: [0.18, 0.4], // × fieldHeight / s at min/max pull
+  launchSpeed: [0.85, 1.95], // × fieldHeight / s at min/max plunger pull (deterministic)
   softLifeMs: 12000,   // after this, scoring stops and gravity ramps up to drain the ball
   hardLifeMs: 22000,   // after this, the ball is force-settled
 };

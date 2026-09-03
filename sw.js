@@ -1,5 +1,5 @@
 // Slingo service worker — stale-while-revalidate for app shell assets.
-const CACHE = 'slingo-v9';
+const CACHE = 'slingo-v10';
 const ASSETS = [
   '.',
   'index.html',
