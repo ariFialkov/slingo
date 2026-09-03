@@ -279,8 +279,8 @@ export function realize(spec, x0, y0, w, h) {
 
 // Current flipper segment (px) for its animated angle.
 export function flipperSegment(f) {
-  const a = f.angle * f.dir;
-  return { a: { x: f.px, y: f.py }, b: { x: f.px + f.dir * f.len * Math.cos(a), y: f.py + f.len * Math.sin(a) } };
+  // angle is measured downward from horizontal; dir mirrors the x extent only
+  return { a: { x: f.px, y: f.py }, b: { x: f.px + f.dir * f.len * Math.cos(f.angle), y: f.py + f.len * Math.sin(f.angle) } };
 }
 
 // Clamp an aim point so the slingshot can only shoot into play: inside the
