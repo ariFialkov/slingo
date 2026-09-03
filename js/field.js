@@ -306,7 +306,7 @@ function generateOnce(theme) {
   const kinds = ['boost', 'brake', 'boost', 'warp', 'warp'].sort(() => Math.random() - 0.5).slice(0, nGates);
   if (kinds.filter((k) => k === 'warp').length === 1) kinds[kinds.indexOf('warp')] = 'boost';
   for (const kind of kinds) {
-    const p = place(0.062, topClear + 0.04, 0.76);
+    const p = place(0.062, topClear + 0.04, 0.76) || (spec.gates.length === 0 ? place(0.056, topClear + 0.02, 0.8, 0.06, 0.94) : null);
     if (p) spec.gates.push({ u: p.u, v: p.v, angle: rand(-0.6, 0.6), kind, sign: +1, tier: 1 });
   }
   const warps = spec.gates.filter((g) => g.kind === 'warp');
