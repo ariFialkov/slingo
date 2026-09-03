@@ -1,8 +1,11 @@
-// Slingo — slingshot pinball: state, input, physics, scoring and rendering.
+// Slingo — slingshot pinball on procedurally generated boards.
 import {
-  BALL_TYPES, START_BALANCE, TOPUP_AMOUNT, PHYS, fmtMoney, round2,
+  BALL_TYPES, START_BALANCE, TOPUP_AMOUNT, BOARD_BALLS, PHYS, fmtMoney, round2,
 } from './config.js';
-import { buildField, rollMultiplier, awardFor, residualFor } from './field.js';
+import {
+  generateSpec, realize, pickTheme, rollMultiplier, awardFor, residualFor,
+  tierLabel, clampAim, flipperSegment,
+} from './field.js';
 import { initAudio, sfx, toggleMute } from './audio.js';
 
 // ---------------------------------------------------------------------------
@@ -11,8 +14,9 @@ import { initAudio, sfx, toggleMute } from './audio.js';
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 let W = 0, H = 0, DPR = 1;
-let field = null;
+let board = null;
 const sling = { ax: 0, ay: 0, maxPull: 0 };
+const fieldRect = { x: 0, y: 0, w: 0, h: 0 };
 
 function layout() {
   W = window.innerWidth;
@@ -23,23 +27,23 @@ function layout() {
   canvas.style.width = W + 'px';
   canvas.style.height = H + 'px';
 
-  // Playfield fills the screen above a slim slingshot strip.
   const top = H * 0.07;
   const availH = H * 0.79 - top;
-  let fw = Math.min(W * 0.96, availH * 0.8);
-  let fh = Math.min(availH, fw / 0.58);
-  const fx = (W - fw) / 2;
-  const fy = top + (availH - fh) / 2;
-  const old = field;
-  field = buildField(fx, fy, fw, fh);
-  if (old) rescaleBalls(old, field);
+  const fw = Math.min(W * 0.94, availH * 0.8);
+  const fh = Math.min(availH, fw / 0.58);
+  fieldRect.x = (W - fw) / 2;
+  fieldRect.y = top + (availH - fh) / 2;
+  fieldRect.w = fw;
+  fieldRect.h = fh;
+  const old = board;
+  if (state.spec) board = realize(state.spec, fieldRect.x, fieldRect.y, fw, fh);
+  if (old && board) rescaleBalls(old, board);
 
   sling.ax = W / 2;
   sling.ay = H * 0.875;
   sling.maxPull = Math.min(Math.min(W, H) * 0.22, (H - sling.ay) * 1.6);
 }
 
-// Keep balls in place (relative to the field) across resizes.
 function rescaleBalls(oldF, newF) {
   const sx = newF.w / oldF.w, sy = newF.h / oldF.h;
   for (const b of state.balls) {
@@ -57,8 +61,11 @@ const state = {
   balance: START_BALANCE,
   lastWin: 0,
   typeIdx: 0,
-  flights: [],   // balls arcing from the slingshot into the field
-  balls: [],     // balls in play on the field
+  spec: null,
+  launched: 0,       // balls launched on the current board
+  boardFadeT: 0,     // when the current board appeared
+  flights: [],
+  balls: [],
   effects: [],
   drag: null,
   loaded: true,
@@ -66,13 +73,23 @@ const state = {
   shake: { mag: 0, t: 0 },
   now: performance.now(),
   last: performance.now(),
-  settled: [],   // {target, paid} log (used by tests)
+  settled: [],       // {target, paid, res, hits, life} log (used by tests)
+  boards: 0,
 };
 window.__slingo = state;
-layout();
-window.addEventListener('resize', layout);
 
 const ballType = () => BALL_TYPES[state.typeIdx];
+const theme = () => board.theme;
+const phys = (k) => (theme().physics && theme().physics[k] !== undefined ? theme().physics[k] : PHYS[k]);
+
+function newBoard(themeObj = pickTheme()) {
+  state.spec = generateSpec(themeObj);
+  state.launched = 0;
+  state.boards++;
+  state.boardFadeT = performance.now();
+  layout();
+  updateHUD();
+}
 
 // ---------------------------------------------------------------------------
 // HUD
@@ -84,13 +101,21 @@ const $toast = document.getElementById('toast');
 const $type = document.getElementById('balltype');
 const $typeDot = document.getElementById('balldot');
 const $typeName = document.getElementById('ballname');
+const $boardinfo = document.getElementById('boardinfo');
+const $newboard = document.getElementById('newboard');
 let toastTimer = 0;
+
+function fieldEmpty() { return state.balls.length === 0 && state.flights.length === 0; }
 
 function updateHUD() {
   $balance.textContent = fmtMoney(state.balance);
   $lastwin.textContent = state.lastWin > 0 ? 'WIN ' + fmtMoney(state.lastWin) : '';
   const n = state.balls.length + state.flights.length;
   $inplay.textContent = n ? `${n} IN PLAY` : '';
+  const t = theme();
+  $boardinfo.textContent = `${t.name} · ${Math.min(state.launched, BOARD_BALLS)}/${BOARD_BALLS}`;
+  $boardinfo.style.color = t.primary;
+  $newboard.disabled = !fieldEmpty();
 }
 function updateTypeUI() {
   const t = ballType();
@@ -119,8 +144,15 @@ $type.addEventListener('click', () => {
   updateTypeUI();
   sfx.led();
 });
-updateHUD();
+$newboard.addEventListener('click', () => {
+  if (!fieldEmpty()) return;
+  initAudio();
+  sfx.flip();
+  newBoard();
+});
+newBoard(); // first board (also runs layout + HUD)
 updateTypeUI();
+window.addEventListener('resize', layout);
 
 // ---------------------------------------------------------------------------
 // Slingshot input (pointer events → touch and mouse alike)
@@ -128,7 +160,7 @@ updateTypeUI();
 canvas.addEventListener('pointerdown', (e) => {
   initAudio();
   if (state.drag) return;
-  if (e.clientY < field.y0 + field.h + 6) return; // grab below the field
+  if (e.clientY < board.y0 + board.h + 6) return; // grab below the field
   canvas.setPointerCapture(e.pointerId);
   state.drag = { id: e.pointerId, px: e.clientX, py: e.clientY, buzzed: false };
   e.preventDefault();
@@ -152,7 +184,7 @@ function endDrag(e) {
   const from = pouchPos();
   const to = aimTarget();
   state.drag = null;
-  if (power > 0.1) fire(from, to, power); // rapid fire: never drop a pull
+  if (power > 0.1) fire(from, to, power);
 }
 canvas.addEventListener('pointerup', endDrag);
 canvas.addEventListener('pointercancel', (e) => { if (state.drag && e.pointerId === state.drag.id) state.drag = null; });
@@ -169,14 +201,13 @@ function pullPower() {
   const p = pouchPos();
   return Math.hypot(p.x - sling.ax, p.y - sling.ay) / sling.maxPull;
 }
-// Aim is clamped to the field's entry zone: the slingshot can only shoot into play.
+// The whole cabinet is open to aim at, except the zone just above the exit.
 function aimTarget() {
   const p = pouchPos();
-  const e = field.entry;
-  const gain = (sling.ay - e.y0) / sling.maxPull;
+  const gain = (sling.ay - (board.y0 + board.h * 0.06)) / sling.maxPull;
   const x = sling.ax + (sling.ax - p.x) * gain;
   const y = sling.ay + (sling.ay - p.y) * gain;
-  return { x: Math.min(e.x1, Math.max(e.x0, x)), y: Math.min(e.y1, Math.max(e.y0, y)) };
+  return clampAim(board, x, y, PHYS.ballRadius * board.w * 2.5);
 }
 
 function fire(from, to, power) {
@@ -186,14 +217,15 @@ function fire(from, to, power) {
     return;
   }
   state.balance -= type.bet;
-  const mult = rollMultiplier(); // the isolated bet is decided here
+  const mult = rollMultiplier(theme().table); // the isolated bet is decided here
   const dist = Math.hypot(to.x - from.x, to.y - from.y);
   state.flights.push({
     x0: from.x, y0: from.y, x1: to.x, y1: to.y,
     cx: (from.x + to.x) / 2, cy: Math.min(from.y, to.y) - (H * 0.05 + H * 0.06 * power),
-    t: 0, dur: 320 + 200 * Math.min(1, dist / (H * 0.8)), power, type,
-    stake: type.bet, mult,
+    t: 0, dur: 300 + 220 * Math.min(1, dist / (H * 0.8)), power, type,
+    stake: type.bet, mult, flips: theme().flips, table: theme().key,
   });
+  state.launched++;
   state.loaded = false;
   state.reloadAt = state.now + 120;
   sfx.fire(power);
@@ -206,43 +238,48 @@ function shake(mag) {
   state.shake.t = state.now;
 }
 
-// A flight lands: the ball enters the field with the shot's momentum.
 function spawnBall(f) {
   const dx = f.x1 - f.x0, dy = f.y1 - f.y0;
   const len = Math.hypot(dx, dy) || 1;
   const [s0, s1] = PHYS.entrySpeed;
-  const speed = field.h * (s0 + (s1 - s0) * f.power);
-  const r = PHYS.ballRadius * field.w;
-  const x = Math.min(field.x0 + field.w - r * 1.5, Math.max(field.x0 + r * 1.5, f.x1));
+  const speed = board.h * (s0 + (s1 - s0) * f.power);
+  const r = PHYS.ballRadius * board.w;
   state.balls.push({
-    x, y: f.y1, vx: (dx / len) * speed, vy: (dy / len) * speed, r,
+    x: f.x1, y: f.y1, vx: (dx / len) * speed, vy: (dy / len) * speed, r,
     type: f.type, stake: f.stake, mult: f.mult, target: round2(f.mult * f.stake), total: 0,
-    born: state.now, cd: new Map(), slowSince: 0, dying: null, hits: 0,
+    born: state.now, cd: new Map(), slowSince: 0, dying: null, hits: 0, flips: f.flips,
+    lastComp: null, repeat: 0, overshoots: 0,
   });
   sfx.hit();
-  state.effects.push({ type: 'puff', x, y: f.y1, t0: state.now, dur: 350 });
+  state.effects.push({ type: 'puff', x: f.x1, y: f.y1, t0: state.now, dur: 350 });
 }
 
 // ---------------------------------------------------------------------------
 // Scoring
 // ---------------------------------------------------------------------------
-function award(ball, comp, key, sign, x, y) {
-  const until = ball.cd.get(key) || 0;
+function award(ball, comp, sign, tier, x, y) {
+  const until = ball.cd.get(comp) || 0;
   if (state.now < until) return;
-  ball.cd.set(key, state.now + 140);
+  ball.cd.set(comp, state.now + 160);
   comp.flashT = state.now;
+  // a ball rattling against the same component: stop scoring it and kick it loose
+  if (comp === ball.lastComp) ball.repeat++; else { ball.lastComp = comp; ball.repeat = 0; }
+  if (ball.repeat >= 3 || state.now - ball.born > PHYS.softLifeMs) {
+    ball.vx += (Math.random() - 0.5) * 0.6 * board.h;
+    ball.vy -= 0.25 * board.h;
+    return;
+  }
   ball.hits++;
-  const a = awardFor(ball, sign);
+  const a = awardFor(ball, sign, tier);
   if (a === 0) { sfx.miss(); return; }
   ball.total = round2(ball.total + a);
   (a > 0 ? sfx.fill : sfx.lose)();
   state.effects.push({
     type: 'float', x, y, text: (a > 0 ? '+' : '−') + fmtMoney(Math.abs(a)).slice(1),
-    color: a > 0 ? '#7dffb9' : '#ff8d8d', t0: state.now, dur: 1000, size: 15,
+    color: a > 0 ? '#7dffb9' : '#ff8d8d', t0: state.now, dur: 1000, size: 13 + 2 * tier,
   });
 }
 
-// The ball is swallowed by a pocket or hole: reveal the residual, pay out.
 function settle(ball, x, y, where) {
   const res = residualFor(ball);
   ball.total = ball.target;
@@ -253,10 +290,10 @@ function settle(ball, x, y, where) {
   if (win) state.lastWin = ball.target;
   if (where) where.flashT = state.now;
   const big = ball.mult >= 10;
-  if (win) schedule(150, () => (big ? sfx.bigwin() : sfx.win()));
-  else schedule(150, () => sfx.lose());
+  schedule(150, () => (win ? (big ? sfx.bigwin() : sfx.win()) : sfx.lose()));
   state.effects.push({
-    type: 'reveal', x, y: Math.min(y, field.y0 + field.h - 30), t0: state.now, dur: 2200,
+    type: 'reveal', x: Math.max(board.x0 + 62, Math.min(board.x0 + board.w - 62, x)), y: Math.min(y, board.y0 + board.h - 30),
+    t0: state.now, dur: 2200,
     line1: (res >= 0 ? '+' : '−') + fmtMoney(Math.abs(res)).slice(1),
     line2: win ? `×${ball.mult} · ${fmtMoney(ball.target)}` : '×0',
     color: win ? '#7dffb9' : '#ff8d8d',
@@ -289,13 +326,21 @@ function stepPhysics(dtTotal) {
   state.balls = state.balls.filter((b) => !b.dying || state.now - b.dying.t0 < 360);
 }
 
+function flipperAngle(f) {
+  const t = state.now - f.flipT;
+  if (t < 0 || t > 380) return f.rest;
+  if (t < 110) return f.rest + (f.flip - f.rest) * (t / 110);
+  if (t < 200) return f.flip;
+  return f.flip + (f.rest - f.flip) * ((t - 200) / 180);
+}
+
 function integrate(b, h) {
-  const F = field;
+  const F = board;
   const age = state.now - b.born;
-  let g = PHYS.gravity * F.h;
-  if (age > PHYS.softLifeMs) g *= 1 + (age - PHYS.softLifeMs) / 3000; // drain stuck balls
+  let g = phys('gravity') * F.h;
+  if (age > PHYS.softLifeMs) g *= 1 + (age - PHYS.softLifeMs) / 3000;
   b.vy += g * h;
-  const drag = Math.max(0, 1 - PHYS.drag * h);
+  const drag = Math.max(0, 1 - phys('drag') * h);
   b.vx *= drag; b.vy *= drag;
   const vmax = PHYS.maxSpeed * F.h;
   const sp = Math.hypot(b.vx, b.vy);
@@ -306,28 +351,34 @@ function integrate(b, h) {
 
   for (const s of F.walls) collideSegment(b, s, PHYS.restitutionWall);
   for (const s of F.rails) {
-    if (collideSegment(b, s, PHYS.restitutionWall)) {
-      award(b, s, s, s.sign, (s.a.x + s.b.x) / 2, (s.a.y + s.b.y) / 2 - 14);
-    }
+    if (collideSegment(b, s, PHYS.restitutionWall)) award(b, s, s.sign, s.tier, (s.a.x + s.b.x) / 2, (s.a.y + s.b.y) / 2 - 14);
+  }
+  for (const t of F.tris) {
+    let hit = false;
+    for (const e of t.edges) if (collideSegment(b, e, 0.7, 0.45 * F.h, t)) hit = true;
+    if (hit) award(b, t, t.sign, t.tier, t.cx, t.cy - 18);
   }
   for (const p of F.pins) {
     if (collideCircle(b, p, PHYS.restitutionPin, 0)) {
-      if (p.sign) award(b, p, p, p.sign, p.x, p.y - p.r - 10);
+      if (p.sign) award(b, p, p.sign, p.tier, p.x, p.y - p.r - 10);
       else p.flashT = state.now;
     }
   }
   for (const bp of F.bumpers) {
     if (collideCircle(b, bp, PHYS.restitutionBumper, PHYS.bumperKick * F.h)) {
-      award(b, bp, bp, bp.sign, bp.x, bp.y - bp.r - 10);
-      shake(0.12);
+      award(b, bp, bp.sign, bp.tier, bp.x, bp.y - bp.r - 10);
+      shake(bp.tier === 3 ? 0.25 : 0.12);
     }
+  }
+  for (const f of F.flippers) {
+    f.angle = flipperAngle(f);
+    collideSegment(b, flipperSegment(f), 0.5);
   }
   // hard bounds (safety net)
   if (b.x < F.x0 + b.r) { b.x = F.x0 + b.r; b.vx = Math.abs(b.vx) * 0.5; }
   if (b.x > F.x0 + F.w - b.r) { b.x = F.x0 + F.w - b.r; b.vx = -Math.abs(b.vx) * 0.5; }
   if (b.y < F.y0 + b.r) { b.y = F.y0 + b.r; b.vy = Math.abs(b.vy) * 0.5; }
 
-  // stuck detection → nudge
   if (Math.hypot(b.vx, b.vy) < 0.03 * F.h) {
     if (!b.slowSince) b.slowSince = state.now;
     else if (state.now - b.slowSince > 450) {
@@ -338,9 +389,10 @@ function integrate(b, h) {
   } else b.slowSince = 0;
 }
 
-function collideSegment(b, s, e) {
+// kickAway: optional {cx,cy} centre to push away from (triangle kickers)
+function collideSegment(b, s, e, kick = 0, kickAway = null) {
   const abx = s.b.x - s.a.x, aby = s.b.y - s.a.y;
-  const len2 = abx * abx + aby * aby;
+  const len2 = abx * abx + aby * aby || 1e-9;
   let t = ((b.x - s.a.x) * abx + (b.y - s.a.y) * aby) / len2;
   t = Math.max(0, Math.min(1, t));
   const cx = s.a.x + abx * t, cy = s.a.y + aby * t;
@@ -355,10 +407,14 @@ function collideSegment(b, s, e) {
   if (vn < 0) {
     b.vx -= (1 + e) * vn * nx;
     b.vy -= (1 + e) * vn * ny;
-    // tangential friction
     const tx = -ny, ty = nx;
     const vt = b.vx * tx + b.vy * ty;
     b.vx -= vt * 0.04 * tx; b.vy -= vt * 0.04 * ty;
+  }
+  if (kick) {
+    let kx = nx, ky = ny;
+    if (kickAway) { kx = b.x - kickAway.cx; ky = b.y - kickAway.cy; const l = Math.hypot(kx, ky) || 1; kx /= l; ky /= l; }
+    b.vx += kx * kick; b.vy += ky * kick;
   }
   return true;
 }
@@ -405,33 +461,31 @@ function ballPairs() {
 }
 
 function checkSensors(b) {
-  const F = field;
-  // rollover lanes (crossed downward)
+  const F = board;
   for (const l of F.lanes) {
-    if (b.prevY < l.y && b.y >= l.y && Math.abs(b.x - l.x) < l.halfW) {
-      award(b, l, l, l.sign, l.x, l.y - 12);
-    }
+    if (b.prevY < l.y && b.y >= l.y && Math.abs(b.x - l.x) < l.halfW) award(b, l, l.sign, l.tier, l.x, l.y - 12);
   }
-  // holes
   for (const hole of F.holes) {
-    if (Math.hypot(b.x - hole.x, b.y - hole.y) < hole.r * 0.62) {
-      settle(b, hole.x, hole.y, hole);
-      return;
+    if (Math.hypot(b.x - hole.x, b.y - hole.y) < hole.r * 0.62) { settle(b, hole.x, hole.y, hole); return; }
+  }
+  // auto-reactive flippers: fire when a ball drops onto them (limited charges per ball)
+  for (const f of F.flippers) {
+    const reach = f.len * 0.95;
+    const within = f.dir > 0 ? b.x > f.px - b.r && b.x < f.px + reach : b.x < f.px + b.r && b.x > f.px - reach;
+    if (within && b.vy > 0 && b.y > f.py - F.h * 0.085 && b.y < f.py + F.h * 0.02 && b.flips > 0 && state.now - f.flipT > 400) {
+      f.flipT = state.now;
+      b.flips--;
+      const k = PHYS.flipperKick * F.h;
+      b.vx = f.dir * k * (0.25 + Math.random() * 0.3);
+      b.vy = -k * (0.85 + Math.random() * 0.25);
+      b.y = Math.min(b.y, f.py - F.h * 0.02);
+      sfx.step();
+      shake(0.2);
+      state.effects.push({ type: 'puff', x: b.x, y: b.y, t0: state.now, dur: 300 });
     }
   }
-  // pockets
-  if (b.y > F.pocketLine) {
-    const i = Math.max(0, Math.min(4, Math.floor((b.x - F.x0) / (F.w / 5))));
-    const p = F.pockets[i];
-    settle(b, (p.x0 + p.x1) / 2, p.yTop + (F.pocketLine - p.yTop) / 2, p);
-    return;
-  }
-  // hard life limit: force-settle into the nearest pocket
-  if (state.now - b.born > PHYS.hardLifeMs) {
-    const i = Math.max(0, Math.min(4, Math.floor((b.x - F.x0) / (F.w / 5))));
-    const p = F.pockets[i];
-    settle(b, (p.x0 + p.x1) / 2, p.yTop + (F.pocketLine - p.yTop) / 2, p);
-  }
+  if (b.y > F.drainY) { settle(b, (F.exit.x0 + F.exit.x1) / 2, F.drainY - 14, F.exit); return; }
+  if (state.now - b.born > PHYS.hardLifeMs) settle(b, (F.exit.x0 + F.exit.x1) / 2, F.drainY - 14, F.exit);
 }
 
 // ---------------------------------------------------------------------------
@@ -443,26 +497,25 @@ function update() {
   state.last = now;
   state.now = now;
 
-  for (let i = pending.length - 1; i >= 0; i--) {
-    if (now >= pending[i].at) pending.splice(i, 1)[0].fn();
-  }
+  for (let i = pending.length - 1; i >= 0; i--) if (now >= pending[i].at) pending.splice(i, 1)[0].fn();
 
-  // flights
   for (let i = state.flights.length - 1; i >= 0; i--) {
     const f = state.flights[i];
     f.t += (dt * 1000) / f.dur;
-    if (f.t >= 1) {
-      state.flights.splice(i, 1);
-      spawnBall(f);
-      updateHUD();
-    }
+    if (f.t >= 1) { state.flights.splice(i, 1); spawnBall(f); updateHUD(); }
   }
   if (!state.loaded && now >= state.reloadAt) state.loaded = true;
 
   const hadBalls = state.balls.length;
   stepPhysics(dt);
-  if (state.balls.length !== hadBalls) updateHUD();
-
+  if (state.balls.length !== hadBalls) {
+    updateHUD();
+    // board exhausted and field empty → roll a new board after the reveal
+    if (fieldEmpty() && state.launched >= BOARD_BALLS && !state.boardPending) {
+      state.boardPending = true;
+      schedule(1500, () => { state.boardPending = false; if (fieldEmpty() && state.launched >= BOARD_BALLS) { sfx.flip(); newBoard(); } });
+    }
+  }
   state.effects = state.effects.filter((fx) => now - fx.t0 < fx.dur);
 }
 
@@ -471,22 +524,41 @@ function update() {
 // ---------------------------------------------------------------------------
 const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
 const easeInOut = (t) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
+const flash = (comp, dur = 350) => (comp.flashT ? Math.max(0, 1 - (state.now - comp.flashT) / dur) : 0);
 
 function rr(x, y, w, h, r) {
   ctx.beginPath();
   if (ctx.roundRect) ctx.roundRect(x, y, w, h, r);
   else ctx.rect(x, y, w, h);
 }
-function text(str, x, y, size, color, { bold = true, align = 'center', glow = 0 } = {}) {
+function text(str, x, y, size, color, { bold = true, align = 'center', glow = 0, spacing = '' } = {}) {
   ctx.font = `${bold ? '700' : '500'} ${size}px system-ui, -apple-system, sans-serif`;
   ctx.textAlign = align;
   ctx.textBaseline = 'middle';
+  if (spacing && 'letterSpacing' in ctx) ctx.letterSpacing = spacing;
   if (glow) { ctx.shadowColor = color; ctx.shadowBlur = glow; }
   ctx.fillStyle = color;
   ctx.fillText(str, x, y);
   ctx.shadowBlur = 0;
+  if (spacing && 'letterSpacing' in ctx) ctx.letterSpacing = '0px';
 }
-const flash = (comp, dur = 350) => (comp.flashT ? Math.max(0, 1 - (state.now - comp.flashT) / dur) : 0);
+function polyPath(poly) {
+  ctx.beginPath();
+  ctx.moveTo(poly[0][0], poly[0][1]);
+  for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i][0], poly[i][1]);
+  ctx.closePath();
+}
+function neonLine(a, b, color, width, glow) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.shadowColor = color;
+  ctx.shadowBlur = glow;
+  ctx.beginPath();
+  ctx.moveTo(a.x, a.y);
+  ctx.lineTo(b.x, b.y);
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+}
 
 function render() {
   const now = state.now;
@@ -497,103 +569,186 @@ function render() {
     ctx.translate((Math.random() * 2 - 1) * m, (Math.random() * 2 - 1) * m);
   } else state.shake.mag = 0;
 
+  const T = theme();
   const bg = ctx.createLinearGradient(0, 0, 0, H);
-  bg.addColorStop(0, '#0d1026');
-  bg.addColorStop(0.55, '#131735');
-  bg.addColorStop(1, '#0a0c1c');
+  bg.addColorStop(0, '#07080f');
+  bg.addColorStop(0.5, '#0b0d1a');
+  bg.addColorStop(1, '#06070d');
   ctx.fillStyle = bg;
   ctx.fillRect(-20, -20, W + 40, H + 40);
 
-  drawField(now);
+  const fade = Math.min(1, (now - state.boardFadeT) / 600);
+  ctx.globalAlpha = fade;
+  drawCabinet(T, now);
+  ctx.globalAlpha = 1;
   drawFlights();
   drawBalls(now);
-  drawSlingshot(now);
+  drawSlingshot(now, T);
   drawEffects(now);
 }
 
-function fieldPath() {
-  const F = field;
-  ctx.beginPath();
-  ctx.moveTo(F.x0, F.y0 + F.h);
-  ctx.lineTo(F.arch[0].x, F.arch[0].y);
-  for (const p of F.arch) ctx.lineTo(p.x, p.y);
-  ctx.lineTo(F.x0 + F.w, F.y0 + F.h);
-  ctx.closePath();
-}
+function drawCabinet(T, now) {
+  const F = board;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
 
-function drawField(now) {
-  const F = field;
+  // outer carbon shell
+  polyPath(F.poly);
+  ctx.strokeStyle = '#141826';
+  ctx.lineWidth = 22;
+  ctx.stroke();
+  polyPath(F.poly);
+  ctx.strokeStyle = '#1d2236';
+  ctx.lineWidth = 14;
+  ctx.stroke();
+
   // table surface
-  fieldPath();
+  polyPath(F.poly);
   const g = ctx.createLinearGradient(0, F.y0, 0, F.y0 + F.h);
-  g.addColorStop(0, '#1a1f45');
-  g.addColorStop(1, '#22285a');
+  g.addColorStop(0, T.surface[0]);
+  g.addColorStop(1, T.surface[1]);
   ctx.fillStyle = g;
   ctx.fill();
   ctx.save();
+  polyPath(F.poly);
   ctx.clip();
-  // subtle glow + grid
-  const rg = ctx.createRadialGradient(F.x0 + F.w / 2, F.y0 + F.h * 0.35, 10, F.x0 + F.w / 2, F.y0 + F.h * 0.35, F.w);
-  rg.addColorStop(0, 'rgba(90,140,255,0.16)');
-  rg.addColorStop(1, 'rgba(90,140,255,0)');
+
+  // ambient glow + hex-ish grid
+  const rg = ctx.createRadialGradient(F.x0 + F.w * 0.5, F.y0 + F.h * 0.4, 10, F.x0 + F.w * 0.5, F.y0 + F.h * 0.4, F.w * 0.9);
+  rg.addColorStop(0, T.glow.replace('0.55', '0.14'));
+  rg.addColorStop(1, 'rgba(0,0,0,0)');
   ctx.fillStyle = rg;
   ctx.fillRect(F.x0, F.y0, F.w, F.h);
-  ctx.strokeStyle = 'rgba(120,150,255,0.07)';
+  ctx.strokeStyle = 'rgba(255,255,255,0.035)';
   ctx.lineWidth = 1;
-  for (let i = 1; i < 10; i++) {
-    ctx.beginPath(); ctx.moveTo(F.x0 + (F.w * i) / 10, F.y0); ctx.lineTo(F.x0 + (F.w * i) / 10, F.y0 + F.h); ctx.stroke();
-  }
-  for (let i = 1; i < 14; i++) {
-    ctx.beginPath(); ctx.moveTo(F.x0, F.y0 + (F.h * i) / 14); ctx.lineTo(F.x0 + F.w, F.y0 + (F.h * i) / 14); ctx.stroke();
-  }
+  const gs = F.w / 12;
+  for (let x = F.x0; x <= F.x0 + F.w; x += gs) { ctx.beginPath(); ctx.moveTo(x, F.y0); ctx.lineTo(x, F.y0 + F.h); ctx.stroke(); }
+  for (let y = F.y0; y <= F.y0 + F.h; y += gs) { ctx.beginPath(); ctx.moveTo(F.x0, y); ctx.lineTo(F.x0 + F.w, y); ctx.stroke(); }
 
-  // entry zone hint while aiming
-  if (state.drag) {
-    const e = F.entry;
-    ctx.setLineDash([6, 6]);
-    ctx.strokeStyle = 'rgba(64,224,255,0.35)';
-    ctx.lineWidth = 1.5;
-    rr(e.x0, e.y0, e.x1 - e.x0, e.y1 - e.y0, 10);
+  // circuit traces
+  ctx.strokeStyle = T.secondary;
+  ctx.globalAlpha = 0.22;
+  ctx.lineWidth = 1.5;
+  for (const line of F.decor) {
+    ctx.beginPath();
+    ctx.moveTo(line[0].x, line[0].y);
+    for (let i = 1; i < line.length; i++) ctx.lineTo(line[i].x, line[i].y);
+    ctx.stroke();
+    for (const p of line) { ctx.beginPath(); ctx.arc(p.x, p.y, 2, 0, Math.PI * 2); ctx.fillStyle = T.secondary; ctx.fill(); }
+  }
+  ctx.globalAlpha = 1;
+
+  // orbit halo
+  if (F.orbit) {
+    ctx.beginPath();
+    ctx.arc(F.orbit.x, F.orbit.y, F.orbit.r * 0.82, 0, Math.PI * 2);
+    ctx.strokeStyle = T.secondary;
+    ctx.globalAlpha = 0.18;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 6]);
     ctx.stroke();
     ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
   }
 
-  // pockets
-  for (const p of F.pockets) {
-    const f = flash(p, 900);
-    rr(p.x0 + 4, p.yTop + 4, p.x1 - p.x0 - 8, F.y0 + F.h - p.yTop - 4, 6);
-    ctx.fillStyle = f ? `rgba(255,214,90,${0.25 + 0.5 * f})` : '#0b0d20';
+  // labels
+  for (const l of F.labels) {
+    if (l.main) {
+      const size = Math.max(9, l.px * 0.55);
+      ctx.font = `700 ${size}px system-ui, -apple-system, sans-serif`;
+      const tw = ctx.measureText(l.text).width + 4;
+      const total = tw + 16 + 30 + 36;
+      const x0 = l.x - total / 2;
+      text(l.text, x0 + tw / 2, l.y, size, T.primary, { glow: 10, spacing: '2px' });
+      // risk pips
+      const px = x0 + tw + 16 + 30, py = l.y;
+      text('RISK', px - 18, py, 8, 'rgba(255,255,255,0.55)');
+      for (let i = 0; i < 4; i++) {
+        rr(px + i * 9, py - 3, 6, 6, 1.5);
+        ctx.fillStyle = i < T.risk ? T.primary : 'rgba(255,255,255,0.15)';
+        ctx.fill();
+      }
+    } else {
+      text(l.text, l.x, l.y, Math.max(8, l.px * 0.5), 'rgba(255,255,255,0.28)', { spacing: '1px' });
+    }
+  }
+
+  // no-aim zone (shown while aiming)
+  if (state.drag) {
+    const z = F.forbid;
+    ctx.save();
+    rr(z.x0, z.y0, z.x1 - z.x0, F.y0 + F.h - z.y0, 6);
+    ctx.clip();
+    ctx.strokeStyle = 'rgba(255,90,90,0.35)';
+    ctx.lineWidth = 2;
+    for (let d = -F.h; d < F.w + F.h; d += 12) { ctx.beginPath(); ctx.moveTo(z.x0 + d, z.y0); ctx.lineTo(z.x0 + d - 60, z.y0 + 60); ctx.stroke(); }
+    ctx.restore();
+    text('NO AIM', (z.x0 + z.x1) / 2, z.y0 + 16, 9, 'rgba(255,120,120,0.8)', { spacing: '2px' });
+  }
+
+  // exit slot
+  {
+    const f = flash(F.exit, 900);
+    const ex0 = F.exit.x0 + 6, ex1 = F.exit.x1 - 6;
+    const wellTop = F.y0 + F.h * 0.965;
+    rr(ex0, wellTop + 2, ex1 - ex0, F.y0 + F.h - wellTop + 30, 4);
+    ctx.fillStyle = f ? `rgba(255,214,90,${0.25 + 0.5 * f})` : '#05060f';
     ctx.fill();
-    ctx.strokeStyle = 'rgba(120,150,255,0.4)';
+    ctx.setLineDash([3, 3]);
+    ctx.strokeStyle = f ? '#ffd65a' : T.secondary;
+    ctx.globalAlpha = 0.7;
     ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(ex0, F.drainY);
+    ctx.lineTo(ex1, F.drainY);
     ctx.stroke();
-    text('?', (p.x0 + p.x1) / 2, (p.yTop + F.y0 + F.h) / 2 + 2, Math.min(28, F.w * 0.06), f ? '#fff' : 'rgba(255,255,255,0.35)', { glow: f ? 12 : 0 });
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+    text('? EXIT', (ex0 + ex1) / 2, (wellTop + F.drainY) / 2 + 1, Math.min(10, F.h * 0.016), f ? '#fff' : 'rgba(255,255,255,0.5)', { glow: f ? 10 : 0, spacing: '2px' });
   }
 
-  // holes
+  // holes & baskets
   for (const hole of F.holes) {
     const f = flash(hole, 900);
-    ctx.beginPath();
-    ctx.arc(hole.x, hole.y, hole.r, 0, Math.PI * 2);
-    const hg = ctx.createRadialGradient(hole.x, hole.y, hole.r * 0.2, hole.x, hole.y, hole.r);
-    hg.addColorStop(0, '#05060f');
-    hg.addColorStop(1, f ? `rgba(255,214,90,${0.6 * f})` : '#161a3a');
-    ctx.fillStyle = hg;
-    ctx.fill();
-    ctx.strokeStyle = f ? '#ffd65a' : 'rgba(160,190,255,0.55)';
-    ctx.lineWidth = 2;
-    ctx.shadowColor = '#ffd65a';
-    ctx.shadowBlur = 14 * f;
-    ctx.stroke();
-    ctx.shadowBlur = 0;
-    text('?', hole.x, hole.y + 1, hole.r * 1.1, 'rgba(255,255,255,0.45)');
+    if (hole.kind === 'basket') {
+      ctx.beginPath();
+      ctx.arc(hole.x, hole.y, hole.r, 0, Math.PI, false);
+      ctx.lineTo(hole.x - hole.r, hole.y - hole.r * 0.6);
+      ctx.moveTo(hole.x + hole.r, hole.y);
+      ctx.lineTo(hole.x + hole.r, hole.y - hole.r * 0.6);
+      ctx.strokeStyle = f ? '#ffd65a' : T.secondary;
+      ctx.lineWidth = 3;
+      ctx.shadowColor = '#ffd65a';
+      ctx.shadowBlur = 14 * f;
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+      ctx.beginPath();
+      ctx.arc(hole.x, hole.y, hole.r * 0.9, 0, Math.PI);
+      ctx.fillStyle = f ? `rgba(255,214,90,${0.4 * f})` : 'rgba(5,6,15,0.9)';
+      ctx.fill();
+    } else {
+      ctx.beginPath();
+      ctx.arc(hole.x, hole.y, hole.r, 0, Math.PI * 2);
+      const hg = ctx.createRadialGradient(hole.x, hole.y, hole.r * 0.2, hole.x, hole.y, hole.r);
+      hg.addColorStop(0, '#04050c');
+      hg.addColorStop(1, f ? `rgba(255,214,90,${0.6 * f})` : '#12152a');
+      ctx.fillStyle = hg;
+      ctx.fill();
+      ctx.strokeStyle = f ? '#ffd65a' : T.secondary;
+      ctx.lineWidth = 2;
+      ctx.shadowColor = '#ffd65a';
+      ctx.shadowBlur = 14 * f;
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+    }
+    text('?', hole.x, hole.y + (hole.kind === 'basket' ? 2 : 1), hole.r * 1.1, 'rgba(255,255,255,0.5)');
   }
 
   // rollover lanes
   for (const l of F.lanes) {
     const f = flash(l, 500);
     ctx.setLineDash([4, 4]);
-    ctx.strokeStyle = f ? `rgba(125,255,185,${0.5 + 0.5 * f})` : 'rgba(125,255,185,0.35)';
+    ctx.strokeStyle = f ? `rgba(125,255,185,${0.5 + 0.5 * f})` : 'rgba(125,255,185,0.4)';
     ctx.lineWidth = f ? 3 : 1.5;
     ctx.shadowColor = '#7dffb9';
     ctx.shadowBlur = 12 * f;
@@ -603,35 +758,48 @@ function drawField(now) {
     ctx.stroke();
     ctx.setLineDash([]);
     ctx.shadowBlur = 0;
-    text('+', l.x, l.y - 11, 11, 'rgba(125,255,185,0.8)');
+    text(tierLabel(l.sign, l.tier), l.x, l.y - 11, 11, '#7dffb9');
   }
 
-  // walls
-  ctx.lineCap = 'round';
-  ctx.strokeStyle = 'rgba(110,200,255,0.85)';
-  ctx.lineWidth = 3;
-  ctx.shadowColor = '#40e0ff';
-  ctx.shadowBlur = 8;
-  ctx.beginPath();
-  for (const s of F.walls) { ctx.moveTo(s.a.x, s.a.y); ctx.lineTo(s.b.x, s.b.y); }
-  ctx.stroke();
-  ctx.shadowBlur = 0;
+  // walls: neon outline + guides
+  for (const s of F.walls) {
+    if (s.neon) neonLine(s.a, s.b, T.primary, s.orbit ? 4 : 3, 10);
+    else neonLine(s.a, s.b, T.secondary, 2.5, 6);
+    if (s.cap) { ctx.beginPath(); ctx.arc(s.a.x, s.a.y, 3.5, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill(); }
+  }
 
   // signed rails
   for (const s of F.rails) {
     const f = flash(s);
     const col = s.sign > 0 ? '#39d97a' : '#e0455a';
-    ctx.strokeStyle = col;
-    ctx.lineWidth = 6 + 3 * f;
-    ctx.shadowColor = col;
-    ctx.shadowBlur = 10 + 16 * f;
-    ctx.beginPath(); ctx.moveTo(s.a.x, s.a.y); ctx.lineTo(s.b.x, s.b.y); ctx.stroke();
-    ctx.shadowBlur = 0;
+    neonLine(s.a, s.b, col, 6 + 3 * f, 10 + 16 * f);
     const mx = (s.a.x + s.b.x) / 2, my = (s.a.y + s.b.y) / 2;
-    text(s.sign > 0 ? '+' : '−', mx + (s.a.x < F.x0 + F.w / 2 ? 14 : -14), my - 10, 14, col, { glow: 6 });
+    text(tierLabel(s.sign, s.tier), mx, my - 13, 13, col, { glow: 6 });
   }
 
-  // pins (signed kicker pins are tinted green/red)
+  // triangle kickers
+  for (const t of F.tris) {
+    const f = flash(t);
+    const col = t.sign > 0 ? '#39d97a' : '#e0455a';
+    ctx.beginPath();
+    ctx.moveTo(t.pts[0].x, t.pts[0].y);
+    ctx.lineTo(t.pts[1].x, t.pts[1].y);
+    ctx.lineTo(t.pts[2].x, t.pts[2].y);
+    ctx.closePath();
+    ctx.fillStyle = f ? col : '#0d1020';
+    ctx.globalAlpha = f ? 0.5 + 0.5 * f : 1;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 3;
+    ctx.shadowColor = col;
+    ctx.shadowBlur = 8 + 14 * f;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    text(tierLabel(t.sign, t.tier), t.cx, t.cy, 12, col, { glow: 6 });
+  }
+
+  // pins
   for (const p of F.pins) {
     const f = flash(p, 250);
     const base = p.sign > 0 ? '#39d97a' : p.sign < 0 ? '#e0455a' : '#9fb4e8';
@@ -642,48 +810,88 @@ function drawField(now) {
     ctx.shadowBlur = (p.sign ? 9 : 6) + 10 * f;
     ctx.fill();
     ctx.shadowBlur = 0;
-    if (p.sign) {
-      ctx.strokeStyle = 'rgba(255,255,255,0.6)';
-      ctx.lineWidth = 1;
-      ctx.stroke();
-    }
+    if (p.sign) text(p.sign > 0 ? '+' : '−', p.x, p.y - p.r - 7, 10, base);
   }
 
-  // bumpers
+  // bumpers: reactor / bonus / pop
   for (const bp of F.bumpers) {
     const f = flash(bp);
     const col = bp.sign > 0 ? '#39d97a' : '#e0455a';
+    const ring = bp.kind === 'reactor' ? T.primary : bp.kind === 'bonus' ? T.secondary : col;
     if (f) {
       ctx.beginPath();
-      ctx.arc(bp.x, bp.y, bp.r + 18 * (1 - f), 0, Math.PI * 2);
-      ctx.strokeStyle = col;
+      ctx.arc(bp.x, bp.y, bp.r + 22 * (1 - f), 0, Math.PI * 2);
+      ctx.strokeStyle = ring;
       ctx.globalAlpha = f;
       ctx.lineWidth = 3;
       ctx.stroke();
       ctx.globalAlpha = 1;
     }
+    if (bp.kind !== 'pop') {
+      // concentric tech rings
+      ctx.strokeStyle = ring;
+      ctx.shadowColor = ring;
+      ctx.shadowBlur = 10 + 14 * f;
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(bp.x, bp.y, bp.r, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([2, 4]);
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(bp.x, bp.y, bp.r * 0.8, now / 900, now / 900 + Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.shadowBlur = 0;
+      ctx.beginPath();
+      ctx.arc(bp.x, bp.y, bp.r * 0.6, 0, Math.PI * 2);
+      const cg = ctx.createRadialGradient(bp.x, bp.y, 1, bp.x, bp.y, bp.r * 0.6);
+      cg.addColorStop(0, f ? '#fff' : ring);
+      cg.addColorStop(1, '#0a0c1c');
+      ctx.fillStyle = cg;
+      ctx.fill();
+      text(bp.kind === 'reactor' ? 'CORE' : 'BONUS', bp.x, bp.y - bp.r * 0.16, Math.max(7, bp.r * 0.22), '#fff', { spacing: '1px' });
+      text(tierLabel(bp.sign, bp.tier), bp.x, bp.y + bp.r * 0.2, Math.max(9, bp.r * 0.3), col, { glow: 6 });
+    } else {
+      ctx.beginPath();
+      ctx.arc(bp.x, bp.y, bp.r, 0, Math.PI * 2);
+      const bgr = ctx.createRadialGradient(bp.x - bp.r * 0.3, bp.y - bp.r * 0.3, bp.r * 0.1, bp.x, bp.y, bp.r);
+      bgr.addColorStop(0, f ? '#ffffff' : (bp.sign > 0 ? '#8affc0' : '#ff9aa8'));
+      bgr.addColorStop(1, bp.sign > 0 ? '#1d8a4a' : '#8f1f30');
+      ctx.fillStyle = bgr;
+      ctx.shadowColor = col;
+      ctx.shadowBlur = 12 + 20 * f;
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      text(tierLabel(bp.sign, bp.tier), bp.x, bp.y + 1, bp.r * 0.9, '#fff', { glow: 4 });
+    }
+  }
+
+  // flippers
+  for (const f of F.flippers) {
+    const seg = flipperSegment(f);
+    const active = state.now - f.flipT < 380;
     ctx.beginPath();
-    ctx.arc(bp.x, bp.y, bp.r, 0, Math.PI * 2);
-    const bgr = ctx.createRadialGradient(bp.x - bp.r * 0.3, bp.y - bp.r * 0.3, bp.r * 0.1, bp.x, bp.y, bp.r);
-    bgr.addColorStop(0, f ? '#ffffff' : (bp.sign > 0 ? '#8affc0' : '#ff9aa8'));
-    bgr.addColorStop(1, bp.sign > 0 ? '#1d8a4a' : '#8f1f30');
-    ctx.fillStyle = bgr;
-    ctx.shadowColor = col;
-    ctx.shadowBlur = 12 + 20 * f;
-    ctx.fill();
-    ctx.shadowBlur = 0;
-    ctx.strokeStyle = 'rgba(255,255,255,0.7)';
-    ctx.lineWidth = 2;
+    ctx.moveTo(seg.a.x, seg.a.y);
+    ctx.lineTo(seg.b.x, seg.b.y);
+    ctx.strokeStyle = '#1d2236';
+    ctx.lineWidth = 12;
     ctx.stroke();
-    text(bp.sign > 0 ? '+' : '−', bp.x, bp.y + 1, bp.r * 1.3, '#fff', { glow: 4 });
+    neonLine(seg.a, seg.b, active ? '#ffffff' : T.primary, 4, active ? 18 : 8);
+    ctx.beginPath();
+    ctx.arc(seg.a.x, seg.a.y, 5, 0, Math.PI * 2);
+    ctx.fillStyle = '#fff';
+    ctx.fill();
   }
   ctx.restore();
 
-  // field outline
-  fieldPath();
-  ctx.strokeStyle = 'rgba(120,150,255,0.45)';
-  ctx.lineWidth = 2;
+  // cabinet neon edge
+  polyPath(F.poly);
+  ctx.strokeStyle = T.primary;
+  ctx.lineWidth = 2.5;
+  ctx.shadowColor = T.primary;
+  ctx.shadowBlur = 14;
   ctx.stroke();
+  ctx.shadowBlur = 0;
 }
 
 function drawBallSprite(x, y, radius, type, { glow = 10 } = {}) {
@@ -709,7 +917,6 @@ function shade(hex, f) {
   shadeCache.set(key, out);
   return out;
 }
-
 function bez(f, t) {
   return {
     x: (1 - t) * (1 - t) * f.x0 + 2 * (1 - t) * t * f.cx + t * t * f.x1,
@@ -718,7 +925,7 @@ function bez(f, t) {
 }
 
 function drawFlights() {
-  const r0 = 9, r1 = PHYS.ballRadius * field.w;
+  const r0 = 9, r1 = PHYS.ballRadius * board.w;
   for (const f of state.flights) {
     const t = Math.min(1, f.t);
     ctx.globalAlpha = 0.35;
@@ -737,8 +944,7 @@ function drawFlights() {
 
 function drawBalls(now) {
   for (const b of state.balls) {
-    let r = b.r;
-    let x = b.x, y = b.y;
+    let r = b.r, x = b.x, y = b.y;
     if (b.dying) {
       const t = Math.min(1, (now - b.dying.t0) / 360);
       r = b.r * (1 - t);
@@ -748,9 +954,16 @@ function drawBalls(now) {
     }
     drawBallSprite(x, y, r, b.type);
     if (!b.dying) {
-      const lbl = fmtMoney(b.total);
       const col = b.total > 0 ? '#7dffb9' : b.total < 0 ? '#ff8d8d' : 'rgba(255,255,255,0.85)';
-      text(lbl, x, y - b.r - 10, 12, col, { glow: 6 });
+      text(fmtMoney(b.total), x, y - b.r - 10, 12, col, { glow: 6 });
+      if (b.flips > 0) {
+        for (let i = 0; i < b.flips; i++) {
+          ctx.beginPath();
+          ctx.arc(x - (b.flips - 1) * 3 + i * 6, y + b.r + 6, 2, 0, Math.PI * 2);
+          ctx.fillStyle = theme().primary;
+          ctx.fill();
+        }
+      }
     }
   }
 }
@@ -758,7 +971,7 @@ function drawBalls(now) {
 // ---------------------------------------------------------------------------
 // Slingshot
 // ---------------------------------------------------------------------------
-function drawSlingshot(now) {
+function drawSlingshot(now, T) {
   const pouch = pouchPos();
   const S = Math.min(W, H);
   const forkY = sling.ay - S * 0.05;
@@ -777,33 +990,35 @@ function drawSlingshot(now) {
     ctx.moveTo(sling.ax, crotchY);
     ctx.quadraticCurveTo(forkR.x, sling.ay + S * 0.008, forkR.x, forkY);
   };
-  ctx.strokeStyle = '#252c52';
+  ctx.strokeStyle = '#1d2236';
   ctx.lineWidth = 11;
   framePath();
   ctx.stroke();
-  ctx.strokeStyle = 'rgba(110,200,255,0.85)';
+  ctx.strokeStyle = T.primary;
   ctx.lineWidth = 2.2;
-  ctx.shadowColor = '#40e0ff';
+  ctx.shadowColor = T.primary;
   ctx.shadowBlur = 9;
   framePath();
   ctx.stroke();
   ctx.shadowBlur = 0;
 
   rr(sling.ax - S * 0.035, baseY - 4, S * 0.07, 8, 4);
-  ctx.fillStyle = '#252c52';
+  ctx.fillStyle = '#1d2236';
   ctx.fill();
-  ctx.strokeStyle = 'rgba(110,200,255,0.5)';
+  ctx.strokeStyle = T.primary;
+  ctx.globalAlpha = 0.5;
   ctx.lineWidth = 1.5;
   ctx.stroke();
+  ctx.globalAlpha = 1;
 
   const bandTo = state.loaded ? pouch : { x: sling.ax, y: sling.ay + 6 };
   for (const tip of [forkL, forkR]) {
     const bg = ctx.createLinearGradient(tip.x, tip.y, bandTo.x, bandTo.y);
-    bg.addColorStop(0, 'rgba(64,224,255,0.95)');
-    bg.addColorStop(1, 'rgba(255,214,90,0.95)');
+    bg.addColorStop(0, T.primary);
+    bg.addColorStop(1, '#ffd65a');
     ctx.strokeStyle = bg;
     ctx.lineWidth = 3.2;
-    ctx.shadowColor = '#7fd8ff';
+    ctx.shadowColor = T.primary;
     ctx.shadowBlur = 7;
     ctx.beginPath();
     ctx.moveTo(tip.x, tip.y);
@@ -814,8 +1029,8 @@ function drawSlingshot(now) {
   for (const tip of [forkL, forkR]) {
     ctx.beginPath();
     ctx.arc(tip.x, tip.y, 5, 0, Math.PI * 2);
-    ctx.fillStyle = '#cdf2ff';
-    ctx.shadowColor = '#40e0ff';
+    ctx.fillStyle = '#ffffff';
+    ctx.shadowColor = T.primary;
     ctx.shadowBlur = 12;
     ctx.fill();
     ctx.shadowBlur = 0;
@@ -824,9 +1039,9 @@ function drawSlingshot(now) {
   if (state.loaded) {
     ctx.beginPath();
     ctx.arc(pouch.x, pouch.y - 3, 13, Math.PI * 0.15, Math.PI * 0.85);
-    ctx.strokeStyle = 'rgba(120,220,255,0.9)';
+    ctx.strokeStyle = T.primary;
     ctx.lineWidth = 3;
-    ctx.shadowColor = '#40e0ff';
+    ctx.shadowColor = T.primary;
     ctx.shadowBlur = 8;
     ctx.stroke();
     ctx.shadowBlur = 0;
@@ -838,7 +1053,7 @@ function drawSlingshot(now) {
     if (power > 0.08) {
       const to = aimTarget();
       const f = { x0: pouch.x, y0: pouch.y, x1: to.x, y1: to.y, cx: (pouch.x + to.x) / 2, cy: Math.min(pouch.y, to.y) - (H * 0.05 + H * 0.06 * power) };
-      ctx.fillStyle = 'rgba(140,225,255,0.8)';
+      ctx.fillStyle = 'rgba(255,255,255,0.75)';
       for (let i = 1; i <= 14; i++) {
         const t = i / 15;
         const p = bez(f, t);
@@ -847,10 +1062,10 @@ function drawSlingshot(now) {
         ctx.fill();
       }
       const pu = 0.6 + 0.4 * Math.sin(now / 140);
-      ctx.strokeStyle = 'rgba(64,224,255,0.95)';
+      ctx.strokeStyle = '#ffffff';
       ctx.lineWidth = 2.2;
-      ctx.shadowColor = '#40e0ff';
-      ctx.shadowBlur = 10 * pu;
+      ctx.shadowColor = T.primary;
+      ctx.shadowBlur = 12 * pu;
       ctx.beginPath();
       ctx.arc(to.x, to.y, 10, 0, Math.PI * 2);
       ctx.stroke();
@@ -898,7 +1113,7 @@ function drawEffects(now) {
       ctx.globalAlpha = inT * (1 - outT);
       const y = fx.y - 22 * easeOutCubic(inT);
       rr(fx.x - 58, y - 24, 116, 46, 8);
-      ctx.fillStyle = 'rgba(8,10,28,0.9)';
+      ctx.fillStyle = 'rgba(8,10,28,0.92)';
       ctx.fill();
       ctx.strokeStyle = fx.color;
       ctx.lineWidth = 1.5;

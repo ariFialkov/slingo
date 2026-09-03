@@ -82,10 +82,26 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 6px 14px calc(8px + env(safe-area-inset-bottom));
+  gap: 8px;
+  padding: 6px 10px calc(8px + env(safe-area-inset-bottom));
   pointer-events: none;
   z-index: 10;
 }
+
+#boardinfo {
+  font-size: 11px;
+  letter-spacing: 1px;
+  min-width: 96px;
+  text-align: center;
+}
+
+#newboard {
+  font-size: 18px;
+  line-height: 1;
+  padding: 5px 11px;
+  color: #cfe0ff;
+}
+#newboard:disabled { opacity: 0.3; cursor: default; }
 
 #balltype {
   display: flex;
