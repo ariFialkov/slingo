@@ -220,9 +220,11 @@ function generateOnce(theme) {
   // lane divider (internal spur) from the arc end down to the field's lower wall
   const laneTop = 0.02 + cr + 0.02;
   spec.walls.push({ a: [LANE_X, laneTop], b: [LANE_X, br], neon: true, divider: true });
-  spec.lane = { top: laneTop, floor: laneFloor, seatV: 0.93, flapV: laneTop + 0.05 };
-  // one-way flap at the lane top: balls pass upward only
-  spec.oneways.push({ u: LANE_CX, v: spec.lane.flapV, angle: Math.PI, lane: true, sign: 0, tier: 0 });
+  // One-way flap at the lane top: balls pass upward only. It is hinged high on
+  // the outer wall and slopes down toward the field, reaching past the divider
+  // top, so a ball dropping onto its top side rolls off into the field.
+  spec.lane = { top: laneTop, floor: laneFloor, seatV: 0.93, flapV: laneTop - 0.035 };
+  spec.oneways.push({ u: 0.9325, v: spec.lane.flapV, angle: Math.PI + 0.35, lane: true, sign: 0, tier: 0 });
 
   const poly = pts;
   const hard = [[[LANE_X, laneTop], [LANE_X, br]]]; // internal walls that count for clearance
@@ -465,7 +467,7 @@ export function realize(spec, x0, y0, w, h) {
     const c = P([o.u, o.v]);
     const nx = Math.sin(o.angle), ny = Math.cos(o.angle);   // pass direction
     const px = Math.cos(o.angle), py = -Math.sin(o.angle);  // along the flap
-    const hw = (o.lane ? 0.04 : ONEWAY_HW) * w;
+    const hw = (o.lane ? 0.0475 : ONEWAY_HW) * w;
     return { ...o, x: c.x, y: c.y, nx, ny, px, py, hw, seg: { a: { x: c.x - px * hw, y: c.y - py * hw }, b: { x: c.x + px * hw, y: c.y + py * hw } }, flashT: 0 };
   });
   const banks = spec.banks.map((bk) => {

@@ -369,7 +369,7 @@ function integrate(b, h) {
   if (b.x > F.x0 + F.w - b.r) { b.x = F.x0 + F.w - b.r; b.vx = -Math.abs(b.vx) * 0.5; }
   if (b.y < F.y0 + b.r) { b.y = F.y0 + b.r; b.vy = Math.abs(b.vy) * 0.5; }
 
-  const inLane = b.x > F.lane.left;
+  const inLane = b.x > F.lane.left && b.y > F.lane.flapY; // below the flap, on the plunger side
   if (Math.hypot(b.vx, b.vy) < 0.03 * F.h && !inLane) {
     if (!b.slowSince) b.slowSince = state.now;
     else if (state.now - b.slowSince > 450) { b.vx += (Math.random() - 0.5) * 0.4 * F.h; b.vy -= 0.15 * F.h; b.slowSince = 0; }
