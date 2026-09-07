@@ -4,7 +4,7 @@ import { realize, rollMultiplier, awardFor, pickAim, exitMultiplier, flipperSegm
 import { MACHINES, buildMachine, buyIn, allowedTypes, machineProfile } from './machines.js';
 import {
   SIGN_COL, GATE_COL, AMBER, rr, polyPath, shade, withAlpha, chromeStroke, post, bumperCap,
-  lampInsert, bar, drawMotif, buildStatic, drawSelect, selectCards, drawBallSprite,
+  lampInsert, bar, drawMotif, buildStatic, renderThumb, drawBallSprite,
 } from './render.js';
 import { dmText, dmWidth, printText } from './font.js';
 import { initAudio, sfx, toggleMute } from './audio.js';
@@ -61,7 +61,7 @@ function rescaleBalls(oldF, newF) {
 // State
 // ---------------------------------------------------------------------------
 const state = {
-  screen: 'select',  // 'select' | 'play'
+  screen: 'lobby',   // 'lobby' (overlay on the live machine) | 'play'
   balance: START_BALANCE,
   lastWin: 0,
   typeIdx: 0,
@@ -74,7 +74,7 @@ const state = {
   seated: null,      // ball resting on the plunger (a weak plunge came back)
   effects: [],
   drag: null,        // {id, y0, pull}
-  pressed: -1,       // select-screen card being pressed
+  demoAt: 0,         // next attract-mode ball while in the lobby
   shake: { mag: 0, t: 0 },
   now: performance.now(),
   last: performance.now(),
@@ -88,33 +88,51 @@ const ballType = () => BALL_TYPES[state.typeIdx];
 const profile = () => machineProfile(state.machine);
 const phys = (k) => (profile().physics && profile().physics[k] !== undefined ? profile().physics[k] : PHYS[k]);
 
-function enterMachine(idx) {
+// Put a machine on the table (lobby or play) and refresh everything that
+// depends on it. The lobby is an overlay on this live machine.
+function showMachine(idx) {
   const m = MACHINES[idx];
-  const cost = buyIn(m);
-  if (state.balance + 1e-9 < cost) { toast(`${m.name} needs a ${fmtMoney(cost)} buy-in — tap ${$topup.textContent}`); sfx.miss(); return false; }
   state.machine = m;
   state.machineIdx = idx;
   state.spec = buildMachine(m);
+  state.balls = [];
+  state.seated = null;
+  state.effects = [];
   state.launched = 0;
   state.boardFadeT = performance.now();
+  state.demoAt = performance.now() + 900;
   const types = allowedTypes(m);
   if (!types.includes(ballType())) state.typeIdx = BALL_TYPES.indexOf(types[0]);
-  state.screen = 'play';
-  document.body.classList.add('playing');
   layout();
   updateTypeUI();
   updateHUD();
+  updateLobby();
   try { localStorage.setItem('slingo.machine', m.id); } catch (e) { /* private mode */ }
+}
+function canAfford(m) { return state.balance + 1e-9 >= buyIn(m); }
+// Tap anywhere on the lobby: the overlay lifts off and the machine is live.
+function enterMachine() {
+  const m = state.machine;
+  if (!canAfford(m)) { toast(`${m.name} needs a ${fmtMoney(buyIn(m))} buy-in — tap ${$topup.textContent}`); sfx.miss(); return false; }
+  state.balls = state.balls.filter((b) => !b.demo);
+  state.screen = 'play';
+  document.body.classList.add('playing');
+  $lobby.classList.add('leaving');
+  setTimeout(() => { if (state.screen === 'play') $lobby.hidden = true; }, 480);
+  updateHUD();
   sfx.flip();
   return true;
 }
-function leaveMachine() {
+function toLobby(idx = state.machineIdx) {
   if (!fieldEmpty()) return;
-  state.screen = 'select';
-  state.seated = null;
+  state.screen = 'lobby';
   document.body.classList.remove('playing');
+  if (idx !== state.machineIdx) showMachine(idx); else { state.balls = []; state.seated = null; state.demoAt = performance.now() + 600; updateLobby(); }
+  $lobby.hidden = false;
+  $lobby.classList.remove('leaving');
+  $lobby.classList.add('entering');
+  requestAnimationFrame(() => requestAnimationFrame(() => $lobby.classList.remove('entering')));
   updateHUD();
-  sfx.led();
 }
 
 // ---------------------------------------------------------------------------
@@ -149,7 +167,7 @@ function updateTypeUI() {
   const t = ballType();
   $typeDot.style.background = `radial-gradient(circle at 35% 35%, ${t.hi}, ${t.color})`;
   $typeDot.style.boxShadow = `0 0 10px ${t.color}`;
-  $typeName.textContent = `${t.name} · ${fmtMoney(t.bet)}`;
+  $typeName.textContent = `${t.name} · ${fmtMoney(t.bet).replace('.00', '')}`;
 }
 function toast(msg) {
   $toast.textContent = msg;
@@ -169,22 +187,79 @@ $type.addEventListener('click', () => {
   state.typeIdx = BALL_TYPES.indexOf(types[(i + 1) % types.length]);
   updateTypeUI(); sfx.led();
 });
-$machines.addEventListener('click', () => { if (!fieldEmpty()) return; initAudio(); leaveMachine(); });
+$machines.addEventListener('click', () => { if (!fieldEmpty()) return; initAudio(); openStrip(); });
+
+// ---------------------------------------------------------------------------
+// Lobby overlay + machine strip
+// ---------------------------------------------------------------------------
+const $lobby = document.getElementById('lobby');
+const $lobbyName = document.getElementById('lobbyName');
+const $lobbySub = document.getElementById('lobbySub');
+const $lobbyIndex = document.getElementById('lobbyIndex');
+const $lobbyStars = document.getElementById('lobbyStars');
+const $lobbyProfile = document.getElementById('lobbyProfile');
+const $lobbyStakes = document.getElementById('lobbyStakes');
+const $lobbyBuyin = document.getElementById('lobbyBuyin');
+const $lobbySig = document.getElementById('lobbySig');
+const $lobbyCta = document.getElementById('lobbyCta');
+const $strip = document.getElementById('strip');
+const $stripRow = document.getElementById('stripRow');
+const money = (v) => fmtMoney(v).replace('.00', '');
+
+function updateLobby() {
+  const m = state.machine; if (!m) return;
+  const prof = machineProfile(m), locked = !canAfford(m);
+  $lobbyIndex.textContent = `${state.machineIdx + 1} / ${MACHINES.length}`;
+  $lobbyName.textContent = m.name;
+  $lobbySub.textContent = m.sub;
+  $lobbyStars.textContent = '★'.repeat(m.stars) + '☆'.repeat(5 - m.stars);
+  $lobbyProfile.textContent = `${prof.name} · ${prof.tag.toUpperCase()}`;
+  $lobbyStakes.textContent = `${money(m.stakes[0])}–${money(m.stakes[1])} BALLS`;
+  $lobbyBuyin.textContent = `BUY-IN ${money(buyIn(m))}`;
+  $lobbyBuyin.classList.toggle('locked', locked);
+  $lobbySig.textContent = m.signature;
+  $lobbyCta.textContent = locked ? `NEEDS ${money(buyIn(m))} · TAP +${money(TOPUP_AMOUNT)} TO TOP UP` : 'TAP ANYWHERE TO PLAY';
+  $lobbyCta.classList.toggle('locked', locked);
+}
+const step = (d) => { initAudio(); sfx.led(); showMachine((state.machineIdx + d + MACHINES.length) % MACHINES.length); };
+document.getElementById('prev').addEventListener('click', (e) => { e.stopPropagation(); step(-1); });
+document.getElementById('next').addEventListener('click', (e) => { e.stopPropagation(); step(1); });
+document.getElementById('lobbyMachines').addEventListener('click', (e) => { e.stopPropagation(); initAudio(); openStrip(); });
+$lobby.addEventListener('click', (e) => { if (e.target.closest('button')) return; initAudio(); enterMachine(); });
+window.addEventListener('keydown', (e) => {
+  if (state.screen !== 'lobby' || !$strip.hidden) return;
+  if (e.key === 'ArrowLeft') step(-1); else if (e.key === 'ArrowRight') step(1); else if (e.key === 'Enter' || e.key === ' ') enterMachine();
+});
+
+const thumbs = new Map();
+function thumbFor(m) {
+  if (!thumbs.has(m.id)) thumbs.set(m.id, renderThumb(buildMachine(m), 354, 450, realize)); // rendered large, shown small
+  return thumbs.get(m.id);
+}
+function openStrip() {
+  $stripRow.innerHTML = '';
+  MACHINES.forEach((m, i) => {
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'card' + (i === state.machineIdx ? ' selected' : '') + (canAfford(m) ? '' : ' locked');
+    card.innerHTML = `<img alt="" src="${thumbFor(m)}"><div class="card-body"><div class="card-name">${m.name}</div><div class="card-meta"><span class="s">${'★'.repeat(m.stars)}</span><span>${money(m.stakes[0])}–${money(m.stakes[1])}</span></div></div>`;
+    card.addEventListener('click', () => { closeStrip(); sfx.led(); if (state.screen === 'play') toLobby(i); else showMachine(i); });
+    $stripRow.appendChild(card);
+  });
+  $strip.hidden = false;
+  const sel = $stripRow.children[state.machineIdx];
+  if (sel) sel.scrollIntoView({ inline: 'center', block: 'nearest' });
+}
+function closeStrip() { $strip.hidden = true; }
+document.getElementById('stripClose').addEventListener('click', closeStrip);
+$strip.querySelector('.strip-backdrop').addEventListener('click', closeStrip);
 
 // ---------------------------------------------------------------------------
 // Input: machine cards on the select screen; the plunger strip in play
 // ---------------------------------------------------------------------------
-const cardAt = (x, y) => selectCards.find((c) => x >= c.x && x <= c.x + c.w && y >= c.y && y <= c.y + c.h);
 canvas.addEventListener('pointerdown', (e) => {
   initAudio();
-  if (state.screen === 'select') {
-    const c = cardAt(e.clientX, e.clientY);
-    state.pressed = c ? c.idx : -1;
-    if (c) sfx.led();
-    e.preventDefault();
-    return;
-  }
-  if (state.drag) return;
+  if (state.screen !== 'play' || state.drag) return;
   if (e.clientY < board.y0 + board.h * 0.78) return; // the plunger strip
   canvas.setPointerCapture(e.pointerId);
   state.drag = { id: e.pointerId, y0: e.clientY, pull: 0, buzzed: false };
@@ -199,19 +274,13 @@ canvas.addEventListener('pointermove', (e) => {
   e.preventDefault();
 });
 function endDrag(e) {
-  if (state.screen === 'select') {
-    const c = cardAt(e.clientX, e.clientY);
-    const idx = state.pressed; state.pressed = -1;
-    if (c && c.idx === idx) enterMachine(idx);
-    return;
-  }
   const d = state.drag;
   if (!d || e.pointerId !== d.id) return;
   state.drag = null;
   if (d.pull > 0.06) launch(d.pull);
 }
 canvas.addEventListener('pointerup', endDrag);
-canvas.addEventListener('pointercancel', (e) => { state.pressed = -1; if (state.drag && e.pointerId === state.drag.id) state.drag = null; });
+canvas.addEventListener('pointercancel', (e) => { if (state.drag && e.pointerId === state.drag.id) state.drag = null; });
 
 const pull = () => (state.drag ? state.drag.pull : 0);
 // Speed that just carries a ball from the slot to the lane flap on this machine.
@@ -231,8 +300,9 @@ function launchSpeed(p) {
 }
 const minClearPull = () => PHYS.launch.threshold;
 
-function launch(p) {
+function launch(p, demo = false) {
   let ball = state.seated;
+  if (demo) { ball = makeBall(BALL_TYPES[0], 0); ball.demo = true; state.balls.push(ball); }
   if (!ball) {
     const type = ballType();
     if (type.bet > state.balance + 1e-9) { toast(`Not enough balance for a ${type.name} ball — tap ${$topup.textContent}`); return; }
@@ -277,6 +347,7 @@ function shake(mag) {
 // ---------------------------------------------------------------------------
 function award(ball, comp, sign, tier, x, y) {
   if (!sign) return;
+  if (ball.demo) { comp.flashT = state.now; return; } // attract mode: lights only
   const until = ball.cd.get(comp) || 0;
   if (state.now < until) return;
   ball.cd.set(comp, state.now + 160);
@@ -306,7 +377,7 @@ function award(ball, comp, sign, tier, x, y) {
 }
 
 function settle(ball, x, y, where) {
-  if (!ball.charged) { // never reached the field: no bet was placed, no prize
+  if (!ball.charged || ball.demo) { // never reached the field / attract ball: no bet, no prize
     ball.dying = { t0: state.now, x, y };
     updateHUD();
     return;
@@ -613,7 +684,7 @@ function updateSpinners(dt) {
 function checkSensors(b) {
   const F = board;
   // The bet is placed the moment the ball clears the lane flap into the field.
-  if (!b.charged && b.y < F.lane.flapY) {
+  if (!b.charged && !b.demo && b.y < F.lane.flapY) {
     b.charged = true;
     state.balance -= b.stake;
     state.launched++;
@@ -662,7 +733,7 @@ function checkSensors(b) {
   }
   // A charge too weak to clear the flap drops the ball back into the slot,
   // where it re-seats un-bet and can simply be launched again.
-  if (!b.charged && b.x > F.lane.left && b.vy >= 0 && b.y >= F.lane.seatY - b.r * 1.2 && !state.seated) {
+  if (!b.charged && !b.demo && b.x > F.lane.left && b.vy >= 0 && b.y >= F.lane.seatY - b.r * 1.2 && !state.seated) {
     state.seated = b; b.seated = true; b.vx = b.vy = 0; b.x = F.lane.x; b.y = F.lane.seatY - b.r;
     updateHUD(); sfx.hit();
     return;
@@ -680,7 +751,13 @@ function update() {
   state.last = now;
   state.now = now;
   for (let i = pending.length - 1; i >= 0; i--) if (now >= pending[i].at) pending.splice(i, 1)[0].fn();
-  if (state.screen !== 'play') return;
+  if (!board) return;
+  // Attract mode: while the lobby overlay is up, free demo balls show the
+  // machine in action (no bet, no prize).
+  if (state.screen === 'lobby' && now >= state.demoAt && state.balls.length < 2) {
+    launch(0.55 + Math.random() * 0.45, true);
+    state.demoAt = now + 3000 + Math.random() * 2500;
+  }
   const hadBalls = state.balls.length;
   stepPhysics(dt);
   updateSpinners(dt);
@@ -698,7 +775,6 @@ const flash = (comp, dur = 350) => (comp.flashT ? Math.max(0, 1 - (state.now - c
 function render() {
   const now = state.now;
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  if (state.screen === 'select') { drawSelect(ctx, W, H, MACHINES, state.balance, state.pressed, now); return; }
   const sAge = now - state.shake.t;
   if (state.shake.mag > 0 && sAge < 320) { const m = state.shake.mag * (1 - sAge / 320); ctx.translate((Math.random() * 2 - 1) * m, (Math.random() * 2 - 1) * m); }
   else state.shake.mag = 0;
@@ -891,7 +967,7 @@ function drawBalls(now) {
     if (b.held) { const t = Math.min(1, (now - (b.held.until - 700)) / 250); r = b.r * Math.max(0, 1 - t); if (r < 0.5) continue; }
     if (b.seated) y += pull() * 10;
     drawBallSprite(ctx, x, y, r, b.type);
-    if (!b.dying && !b.held) {
+    if (!b.dying && !b.held && !b.demo) {
       const col = b.total > 0 ? '#7dffb9' : b.total < 0 ? '#ff8d8d' : 'rgba(255,255,255,0.85)';
       const pop = Math.max(0, 1 - (now - b.popT) / 260); // scoreboard flicker on each award
       dmText(ctx, fmtMoney(b.total), x, y - b.r - 12, 9 + 2.5 * pop, pop > 0.5 ? '#ffffff' : col, { align: 'center', glow: 6 + 10 * pop });
@@ -941,13 +1017,13 @@ function drawEffects(now) {
 // Main loop
 // ---------------------------------------------------------------------------
 function frame() { update(); render(); requestAnimationFrame(frame); }
-layout();
-updateTypeUI();
-updateHUD();
+let startIdx = 0;
+try { const saved = localStorage.getItem('slingo.machine'); const i = MACHINES.findIndex((m) => m.id === saved); if (i >= 0) startIdx = i; } catch (e) { /* private mode */ }
+showMachine(startIdx);
 window.addEventListener('resize', layout);
 requestAnimationFrame(frame);
 
 // expose for tests
+state.showMachine = showMachine;
 state.enterMachine = enterMachine;
-state.leaveMachine = leaveMachine;
-state.cards = selectCards;
+state.toLobby = toLobby;

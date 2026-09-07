@@ -5,7 +5,7 @@
 import { PROFILES, BALL_TYPES, fmtMoney } from './config.js';
 import { dmText, dmWidth, printText, printWidth } from './font.js';
 import { tierLabel } from './field.js';
-import { buyIn, machineProfile, allowedTypes } from './machines.js';
+import { machineProfile, allowedTypes } from './machines.js';
 
 export const SIGN_COL = (s) => (s > 0 ? '#2fd36b' : '#ff3b3b');
 export const SIGN_DARK = (s) => (s > 0 ? '#0f5a2b' : '#6a1010');
@@ -165,8 +165,13 @@ export function drawMotif(c, kind, x, y, r, color) {
 }
 
 // ---------------------------------------------------------------------------
-// Screen-printed playfield art
+// Screen-printed playfield art — bold flat colour, heavy keylines, halftone
 // ---------------------------------------------------------------------------
+const KEY = 'rgba(0,0,0,0.85)';
+function keyFill(c, fill, lw = 2, alpha = 1) {
+  c.fillStyle = fill; c.fill();
+  c.lineJoin = 'round'; c.strokeStyle = KEY; c.lineWidth = lw; c.globalAlpha *= alpha; c.stroke(); c.globalAlpha /= alpha;
+}
 function flamesPath(c, x0, yBase, w, h, seed) {
   c.beginPath(); c.moveTo(x0, yBase);
   const n = Math.max(4, Math.round(w / 34));
@@ -179,36 +184,68 @@ function flamesPath(c, x0, yBase, w, h, seed) {
   }
   c.lineTo(x0 + w, yBase); c.closePath();
 }
+// A motif with a heavy keyline (drawn black and slightly larger underneath).
+export function motifKeyed(c, kind, x, y, r, color) {
+  drawMotif(c, kind, x + 1.5, y + 2.5, r * 1.16, 'rgba(0,0,0,0.45)');
+  drawMotif(c, kind, x, y, r * 1.16, KEY);
+  drawMotif(c, kind, x, y, r, color);
+}
+// A printed plate: rounded rect, flat fill, keyline, bold lettering.
+export function plateText(c, str, x, y, size, fill, ink, { angle = 0, pad = 6, alpha = 1, notch = false } = {}) {
+  const w = printWidth(c, str, size) + pad * 2, h = size * 1.35;
+  c.save(); c.translate(x, y); c.rotate(angle); c.globalAlpha = alpha;
+  c.save(); c.translate(1.5, 2.5); if (notch) ribbonPath(c, -w / 2, -h / 2, w, h); else rr(c, -w / 2, -h / 2, w, h, h * 0.3); c.fillStyle = 'rgba(0,0,0,0.5)'; c.fill(); c.restore();
+  if (notch) ribbonPath(c, -w / 2, -h / 2, w, h); else rr(c, -w / 2, -h / 2, w, h, h * 0.3);
+  keyFill(c, fill, 1.8);
+  printText(c, str, 0, 0.5, size, { fill: ink, stroke: 'rgba(0,0,0,0)' });
+  c.restore();
+}
+function ribbonPath(c, x, y, w, h) {
+  const n = h * 0.35;
+  c.beginPath(); c.moveTo(x, y); c.lineTo(x + w, y); c.lineTo(x + w - n, y + h / 2); c.lineTo(x + w, y + h); c.lineTo(x, y + h); c.lineTo(x + n, y + h / 2); c.closePath();
+}
 export function drawArt(c, F, a, pal) {
   const { x, y, W, H, R } = a;
   const alpha = a.alpha === undefined ? 1 : a.alpha;
   c.save(); c.globalAlpha = alpha;
   switch (a.kind) {
+    case 'rays': {
+      // alternating radial bands from a point — the classic backglass burst
+      const cols = a.colors || [pal.accent, pal.accent2], n = a.n || 18, Rr = Math.max(F ? F.w + F.h : 1200, 600);
+      c.translate(x, y);
+      for (let i = 0; i < n; i++) { const a0 = (i * Math.PI * 2) / n, a1 = a0 + Math.PI / n; c.beginPath(); c.moveTo(0, 0); c.lineTo(Math.cos(a0) * Rr, Math.sin(a0) * Rr); c.lineTo(Math.cos(a1) * Rr, Math.sin(a1) * Rr); c.closePath(); c.fillStyle = cols[i % cols.length]; c.fill(); }
+      break;
+    }
     case 'flames': {
       const cols = a.colors || ['#ff3b1f', '#ffd400', '#fff1c1'];
-      cols.forEach((col, i) => { flamesPath(c, x, y, W, H * (1 - i * 0.28), i * 1.7); c.fillStyle = col; c.globalAlpha = alpha * (i === 0 ? 0.9 : 0.85); c.fill(); });
+      cols.forEach((col, i) => { flamesPath(c, x, y, W, H * (1 - i * 0.28), i * 1.7); keyFill(c, col, 2.5, 0.9); });
       break;
     }
     case 'checker': {
       const cols = a.colors || ['#fff', '#000'], n = Math.max(2, Math.round(W / Math.max(4, H / 2)));
       c.translate(x, y); c.rotate(a.angle || 0);
       for (let i = 0; i < n; i++) for (let j = 0; j < 2; j++) { c.fillStyle = cols[(i + j) % 2]; c.fillRect((i * W) / n, (j * H) / 2, W / n + 0.5, H / 2 + 0.5); }
-      c.strokeStyle = 'rgba(0,0,0,0.5)'; c.lineWidth = 1; c.strokeRect(0, 0, W, H);
+      c.strokeStyle = KEY; c.lineWidth = 2; c.strokeRect(0, 0, W, H);
       break;
     }
     case 'burst': {
-      c.translate(x, y); c.fillStyle = a.color;
-      for (let i = 0; i < 16; i++) { const a0 = (i * Math.PI) / 8, a1 = a0 + Math.PI / 16; c.beginPath(); c.moveTo(0, 0); c.lineTo(Math.cos(a0) * R, Math.sin(a0) * R); c.lineTo(Math.cos(a1) * R, Math.sin(a1) * R); c.closePath(); c.fill(); }
+      c.translate(x, y);
+      for (let i = 0; i < 16; i++) { const a0 = (i * Math.PI) / 8, a1 = a0 + Math.PI / 16; c.beginPath(); c.moveTo(0, 0); c.lineTo(Math.cos(a0) * R, Math.sin(a0) * R); c.lineTo(Math.cos(a1) * R, Math.sin(a1) * R); c.closePath(); keyFill(c, a.color, 1.5, 0.6); }
       break;
     }
     case 'stars': {
       const n = a.n || 10;
-      for (let i = 0; i < n; i++) { const t = ((i * 7919) % 1000) / 1000, s = ((i * 104729) % 1000) / 1000; drawMotif(c, 'star', x + t * W, y + s * H, 3 + ((i * 31) % 5), a.color); }
+      for (let i = 0; i < n; i++) { const t = ((i * 7919) % 1000) / 1000, s = ((i * 104729) % 1000) / 1000; motifKeyed(c, 'star', x + t * W, y + s * H, 3 + ((i * 31) % 5), a.color); }
       break;
     }
     case 'halftone': {
       c.fillStyle = a.color;
       for (let yy = y; yy < y + H; yy += 9) { const t = (yy - y) / H; for (let xx = x; xx < x + W; xx += 9) { c.beginPath(); c.arc(xx, yy, 3.2 * (1 - t) + 0.3, 0, Math.PI * 2); c.fill(); } }
+      break;
+    }
+    case 'dots': {
+      c.fillStyle = a.color;
+      for (let yy = y; yy < y + H; yy += 12) for (let xx = x; xx < x + W; xx += 12) { c.beginPath(); c.arc(xx, yy, 1.6, 0, Math.PI * 2); c.fill(); }
       break;
     }
     case 'waves': {
@@ -217,25 +254,40 @@ export function drawArt(c, F, a, pal) {
         c.beginPath(); c.moveTo(x, y + H);
         const n = 4 + k, amp = H * 0.28;
         for (let i = 0; i <= n; i++) { const xx = x + (i / n) * W, cx = xx - W / n / 2; c.quadraticCurveTo(cx, y + H * 0.3 - amp + k * 6, xx, y + H * 0.55 + k * 6); c.quadraticCurveTo(xx + W / n * 0.2, y + H * 0.8 + k * 6, xx + W / n * 0.35, y + H * 0.7 + k * 6); }
-        c.lineTo(x + W, y + H); c.closePath(); c.fillStyle = col; c.globalAlpha = alpha * (k === 0 ? 0.6 : 0.4); c.fill();
+        c.lineTo(x + W, y + H); c.closePath(); c.globalAlpha = alpha * (k === 0 ? 0.85 : 0.6); keyFill(c, col, 2.5, 0.9);
       });
       break;
     }
-    case 'text': printText(c, a.text, x, y, a.size * F.w, { fill: a.color, stroke: 'rgba(0,0,0,0)', angle: a.angle || 0, alpha }); break;
+    case 'text': printText(c, a.text, x, y, a.size * F.w, { fill: a.color, stroke: a.keyline ? KEY : 'rgba(0,0,0,0)', angle: a.angle || 0, alpha }); break;
+    case 'ribbon': plateText(c, a.text, x, y, a.size * F.w, a.color || pal.accent, a.ink || '#fff', { angle: a.angle || 0, pad: 10, notch: true }); break;
+    case 'bigmotif': {
+      motifKeyed(c, a.motif, x, y, R, a.color);
+      c.save(); c.beginPath(); c.arc(x, y, R * 1.1, 0, Math.PI * 2); c.clip();
+      c.fillStyle = 'rgba(0,0,0,0.35)';
+      for (let yy = y - R; yy < y + R * 1.1; yy += 7) { const t = Math.max(0, (yy - y + R) / (2.1 * R)); for (let xx = x - R; xx < x + R * 1.1; xx += 7) { c.beginPath(); c.arc(xx, yy, 0.2 + 2.4 * t, 0, Math.PI * 2); c.fill(); } }
+      c.restore();
+      break;
+    }
+    case 'speedlines': {
+      c.strokeStyle = a.color; c.lineCap = 'round';
+      const n = a.n || 6;
+      for (let i = 0; i < n; i++) { const yy = y + (H * (i + 0.5)) / n, len = W * (0.5 + 0.5 * Math.abs(Math.sin(i * 1.7))); c.lineWidth = 2 + (i % 3); c.beginPath(); c.moveTo(a.dir < 0 ? x + W : x, yy); c.lineTo(a.dir < 0 ? x + W - len : x + len, yy); c.stroke(); }
+      break;
+    }
     case 'bolts': {
       const n = a.n || 2;
-      for (let i = 0; i < n; i++) drawMotif(c, 'bolt', x + ((i + 0.5) / n) * W, y + H * (0.3 + 0.4 * (i % 2)), Math.min(W / n, H) * 0.42, a.color);
+      for (let i = 0; i < n; i++) motifKeyed(c, 'bolt', x + ((i + 0.5) / n) * W, y + H * (0.3 + 0.4 * (i % 2)), Math.min(W / n, H) * 0.42, a.color);
       break;
     }
     case 'circuit': {
-      c.strokeStyle = a.color; c.lineWidth = 1.5; c.fillStyle = a.color;
+      c.strokeStyle = a.color; c.lineWidth = 2.5; c.fillStyle = a.color;
       let seed = 3;
       const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
       for (let i = 0; i < 26; i++) {
         let px = x + rnd() * W, py = y + rnd() * H;
         c.beginPath(); c.moveTo(px, py);
         for (let k = 0; k < 3; k++) { if (rnd() < 0.5) px += (rnd() - 0.5) * W * 0.3; else py += (rnd() - 0.5) * H * 0.2; c.lineTo(px, py); }
-        c.stroke(); c.beginPath(); c.arc(px, py, 3, 0, Math.PI * 2); c.fill();
+        c.stroke(); c.beginPath(); c.arc(px, py, 4, 0, Math.PI * 2); c.fill(); c.strokeStyle = KEY; c.lineWidth = 1.2; c.stroke(); c.strokeStyle = a.color; c.lineWidth = 2.5;
       }
       break;
     }
@@ -243,29 +295,28 @@ export function drawArt(c, F, a, pal) {
       c.save(); c.beginPath(); c.rect(x, y, W, H); c.clip();
       c.fillStyle = '#111'; c.fillRect(x, y, W, H); c.fillStyle = '#ffd400';
       for (let xx = x - H; xx < x + W + H; xx += H * 2) { c.beginPath(); c.moveTo(xx, y + H); c.lineTo(xx + H, y); c.lineTo(xx + H * 2, y); c.lineTo(xx + H, y + H); c.closePath(); c.fill(); }
-      c.restore(); c.strokeStyle = 'rgba(0,0,0,0.6)'; c.lineWidth = 1; c.strokeRect(x, y, W, H);
+      c.restore(); c.strokeStyle = KEY; c.lineWidth = 2; c.strokeRect(x, y, W, H);
       break;
     }
     case 'lanes': {
-      c.fillStyle = withAlpha(pal.accent2, 0.12); c.fillRect(x, y, W, H);
-      c.fillStyle = withAlpha(pal.ink, 0.35);
-      for (const lx of [x + W * 0.25, x + W * 0.75]) for (let k = 0; k < 5; k++) { const yy = y + H * (0.15 + k * 0.17); c.beginPath(); c.moveTo(lx, yy + 6); c.lineTo(lx - 5, yy - 2); c.lineTo(lx + 5, yy - 2); c.closePath(); c.fill(); }
+      rr(c, x, y, W, H, 6); keyFill(c, withAlpha(pal.accent2, 0.18), 2);
+      for (const lx of [x + W * 0.25, x + W * 0.75]) for (let k = 0; k < 5; k++) { const yy = y + H * (0.15 + k * 0.17); c.beginPath(); c.moveTo(lx, yy + 7); c.lineTo(lx - 6, yy - 2); c.lineTo(lx + 6, yy - 2); c.closePath(); keyFill(c, pal.accent2, 1.5); }
       break;
     }
     case 'uturn': {
       const ri = a.ri * F.w, cx = x, cy = y, top = F.y0 + a.armTop * F.h;
       c.beginPath(); c.moveTo(cx - ri, top); c.arc(cx, top, ri, Math.PI, Math.PI * 2); c.lineTo(cx + ri, cy); c.arc(cx, cy, ri, 0, Math.PI); c.closePath();
       const g = c.createLinearGradient(cx - ri, 0, cx + ri, 0); g.addColorStop(0, shade(pal.accent, 0.6)); g.addColorStop(0.5, pal.accent); g.addColorStop(1, shade(pal.accent, 0.6));
-      c.fillStyle = g; c.fill(); c.strokeStyle = 'rgba(0,0,0,0.6)'; c.lineWidth = 2; c.stroke();
-      drawMotif(c, F.machine.motif, cx, (top + cy) / 2, ri * 0.55, 'rgba(255,255,255,0.35)');
-      c.fillStyle = withAlpha(pal.ink, 0.3);
-      for (let k = 0; k < 4; k++) { const yy = top + (cy - top) * (0.2 + k * 0.2); for (const [lx, dir] of [[cx + (a.R + a.ri) / 2 * F.w * (a.entry === 'left' ? -1 : 1), 1], [cx - (a.R + a.ri) / 2 * F.w * (a.entry === 'left' ? -1 : 1), -1]]) { c.beginPath(); c.moveTo(lx, yy + 6 * dir); c.lineTo(lx - 5, yy - 2 * dir); c.lineTo(lx + 5, yy - 2 * dir); c.closePath(); c.fill(); } }
+      keyFill(c, g, 2.5);
+      motifKeyed(c, F.machine.motif, cx, (top + cy) / 2, ri * 0.5, 'rgba(255,255,255,0.8)');
+      for (let k = 0; k < 4; k++) { const yy = top + (cy - top) * (0.2 + k * 0.2); for (const [lx, dir] of [[cx + (a.R + a.ri) / 2 * F.w * (a.entry === 'left' ? -1 : 1), 1], [cx - (a.R + a.ri) / 2 * F.w * (a.entry === 'left' ? -1 : 1), -1]]) { c.beginPath(); c.moveTo(lx, yy + 7 * dir); c.lineTo(lx - 6, yy - 2 * dir); c.lineTo(lx + 6, yy - 2 * dir); c.closePath(); keyFill(c, pal.accent2, 1.5); } }
       break;
     }
     case 'cross': {
       const d = a.d * F.w;
-      c.beginPath(); c.arc(x, y, d * 1.05, 0, Math.PI * 2); c.fillStyle = withAlpha(pal.accent, 0.18); c.fill();
-      c.strokeStyle = withAlpha(pal.ink, 0.35); c.lineWidth = 2; c.setLineDash([6, 6]);
+      c.beginPath(); c.arc(x, y, d * 1.05, 0, Math.PI * 2); keyFill(c, withAlpha(pal.accent, 0.35), 2.5);
+      c.beginPath(); c.arc(x, y, d * 0.55, 0, Math.PI * 2); c.strokeStyle = KEY; c.lineWidth = 2; c.stroke();
+      c.strokeStyle = withAlpha(pal.ink, 0.6); c.lineWidth = 3; c.setLineDash([6, 6]);
       for (let k = 0; k < 4; k++) { const an = (k * Math.PI) / 2; c.beginPath(); c.moveTo(x + Math.cos(an) * d * 0.35, y + Math.sin(an) * d * 0.35); c.lineTo(x + Math.cos(an) * d * 1.05, y + Math.sin(an) * d * 1.05); c.stroke(); }
       c.setLineDash([]);
       break;
@@ -274,57 +325,56 @@ export function drawArt(c, F, a, pal) {
       c.save(); c.beginPath();
       if (a.curve) { c.moveTo(x, y); c.quadraticCurveTo(x - W * 0.3, y + H * 0.5, x, y + H); c.lineTo(x + W, y + H); c.quadraticCurveTo(x + W * 1.3, y + H * 0.5, x + W, y); c.closePath(); }
       else c.rect(x, y, W, H);
-      c.fillStyle = 'rgba(30,32,38,0.55)'; c.fill(); c.strokeStyle = 'rgba(255,255,255,0.6)'; c.lineWidth = 2; c.stroke();
-      c.setLineDash([14, 12]); c.strokeStyle = withAlpha(pal.accent3 || '#ffd400', 0.8); c.lineWidth = 3;
+      c.fillStyle = 'rgba(30,32,38,0.6)'; c.fill(); c.strokeStyle = '#ffffff'; c.lineWidth = 3; c.stroke(); c.strokeStyle = KEY; c.lineWidth = 1.2; c.stroke();
+      c.setLineDash([14, 12]); c.strokeStyle = pal.accent3 || '#ffd400'; c.lineWidth = 4;
       c.beginPath(); c.moveTo(x + W / 2, y); c.lineTo(x + W / 2, y + H); c.stroke(); c.setLineDash([]); c.restore();
       break;
     }
     case 'stripes': {
       c.save(); c.beginPath(); c.rect(x, y, W, H); c.clip();
       const cols = a.colors || ['#fff', '#000'];
-      for (let i = 0, xx = x - H; xx < x + W + H; xx += 22, i++) { c.fillStyle = cols[i % cols.length]; c.beginPath(); c.moveTo(xx, y + H); c.lineTo(xx + H, y); c.lineTo(xx + H + 11, y); c.lineTo(xx + 11, y + H); c.closePath(); c.fill(); }
+      for (let i = 0, xx = x - H; xx < x + W + H; xx += 22, i++) { c.beginPath(); c.moveTo(xx, y + H); c.lineTo(xx + H, y); c.lineTo(xx + H + 11, y); c.lineTo(xx + 11, y + H); c.closePath(); keyFill(c, cols[i % cols.length], 1.5, 0.5); }
       c.restore();
       break;
     }
     case 'planet': {
       c.beginPath(); c.arc(x, y, R, 0, Math.PI * 2);
       const g = c.createRadialGradient(x - R * 0.3, y - R * 0.3, R * 0.1, x, y, R); g.addColorStop(0, a.colors[1]); g.addColorStop(1, a.colors[0]);
-      c.fillStyle = g; c.globalAlpha = alpha * 0.35; c.fill();
-      c.globalAlpha = alpha * 0.5; c.beginPath(); c.ellipse(x, y, R * 1.6, R * 0.35, -0.35, 0, Math.PI * 2); c.strokeStyle = a.colors[1]; c.lineWidth = 5; c.stroke();
+      c.globalAlpha = alpha * 0.55; keyFill(c, g, 3);
+      c.globalAlpha = alpha * 0.75; c.beginPath(); c.ellipse(x, y, R * 1.6, R * 0.35, -0.35, 0, Math.PI * 2); c.strokeStyle = KEY; c.lineWidth = 9; c.stroke(); c.strokeStyle = a.colors[1]; c.lineWidth = 5; c.stroke();
       break;
     }
     case 'comet': {
       c.beginPath(); c.moveTo(x, y); c.lineTo(x + W, y + H * 0.3); c.lineTo(x + W * 0.95, y + H * 0.7); c.closePath();
       const g = c.createLinearGradient(x, y, x + W, y); g.addColorStop(0, 'rgba(255,255,255,0)'); g.addColorStop(1, a.color);
-      c.fillStyle = g; c.fill(); c.beginPath(); c.arc(x + W, y + H * 0.5, H * 0.35, 0, Math.PI * 2); c.fillStyle = '#fff'; c.fill();
+      c.fillStyle = g; c.fill(); c.beginPath(); c.arc(x + W, y + H * 0.5, H * 0.35, 0, Math.PI * 2); keyFill(c, '#fff', 2);
       break;
     }
     case 'bricks': {
-      c.strokeStyle = withAlpha(a.color, 0.8); c.lineWidth = 1.2;
+      c.strokeStyle = withAlpha(a.color, 0.9); c.lineWidth = 2;
       const bh = 16, bw = 34;
       for (let row = 0, yy = y; yy < y + H; yy += bh, row++) { c.beginPath(); c.moveTo(x, yy); c.lineTo(x + W, yy); c.stroke(); for (let xx = x + (row % 2 ? bw / 2 : 0); xx < x + W; xx += bw) { c.beginPath(); c.moveTo(xx, yy); c.lineTo(xx, yy + bh); c.stroke(); } }
       break;
     }
     case 'crenels': {
-      c.fillStyle = withAlpha(a.color, 0.5);
       const n = Math.round(W / 22);
-      for (let i = 0; i < n; i += 2) c.fillRect(x + (i * W) / n, y, W / n, H);
-      c.fillRect(x, y + H, W, 3);
+      for (let i = 0; i < n; i += 2) { c.beginPath(); c.rect(x + (i * W) / n, y, W / n, H); keyFill(c, withAlpha(a.color, 0.7), 1.5); }
+      c.beginPath(); c.rect(x, y + H, W, 4); keyFill(c, withAlpha(a.color, 0.7), 1.5);
       break;
     }
     case 'banner': {
       c.beginPath(); c.moveTo(x, y); c.lineTo(x + W, y); c.lineTo(x + W, y + H * 0.8); c.lineTo(x + W / 2, y + H); c.lineTo(x, y + H * 0.8); c.closePath();
-      c.fillStyle = a.color; c.fill(); c.strokeStyle = 'rgba(0,0,0,0.6)'; c.lineWidth = 1.5; c.stroke();
-      drawMotif(c, 'crown', x + W / 2, y + H * 0.4, W * 0.3, 'rgba(255,220,100,0.9)');
+      keyFill(c, a.color, 2.5);
+      motifKeyed(c, 'crown', x + W / 2, y + H * 0.4, W * 0.3, '#ffdc64');
       break;
     }
     case 'mountain': {
       c.beginPath(); c.moveTo(x, y + H); c.lineTo(x + W * 0.35, y + H * 0.1); c.lineTo(x + W * 0.45, y + H * 0.3); c.lineTo(x + W * 0.55, y); c.lineTo(x + W * 0.7, y + H * 0.4); c.lineTo(x + W, y + H); c.closePath();
-      c.fillStyle = a.color; c.fill(); c.strokeStyle = withAlpha(pal.accent, 0.8); c.lineWidth = 2; c.stroke();
+      keyFill(c, a.color, 3); c.strokeStyle = pal.accent; c.lineWidth = 1.5; c.stroke();
       break;
     }
     case 'lava': {
-      c.strokeStyle = a.color; c.lineWidth = 2.5; c.shadowColor = a.color; c.shadowBlur = 10;
+      c.strokeStyle = a.color; c.lineWidth = 3; c.shadowColor = a.color; c.shadowBlur = 10; c.lineCap = 'round';
       let seed = 11; const rnd = () => { seed = (seed * 48271) % 2147483647; return seed / 2147483647; };
       for (let i = 0; i < 14; i++) { let px = x + rnd() * W, py = y + rnd() * H; c.beginPath(); c.moveTo(px, py); for (let k = 0; k < 5; k++) { px += (rnd() - 0.5) * 40; py += rnd() * 30; c.lineTo(px, py); } c.stroke(); }
       c.shadowBlur = 0;
@@ -333,19 +383,20 @@ export function drawArt(c, F, a, pal) {
     case 'curtain': {
       const n = Math.max(2, Math.round(W / 10));
       for (let i = 0; i < n; i++) { const g = c.createLinearGradient(x + (i * W) / n, 0, x + ((i + 1) * W) / n, 0); g.addColorStop(0, shade(a.color, 0.45)); g.addColorStop(0.5, a.color); g.addColorStop(1, shade(a.color, 0.4)); c.fillStyle = g; c.fillRect(x + (i * W) / n, y, W / n + 0.5, H); }
-      c.fillStyle = withAlpha(pal.accent2, 0.7); c.fillRect(x, y + H * 0.45, W, 6);
+      c.beginPath(); c.rect(x, y + H * 0.45, W, 8); keyFill(c, pal.accent2, 1.5);
+      c.strokeStyle = KEY; c.lineWidth = 2; c.strokeRect(x, y, W, H);
       break;
     }
     case 'cards': {
       const suits = ['♠', '♥', '♦', '♣'], n = a.n || 10;
-      c.font = `900 26px serif`; c.textAlign = 'center'; c.textBaseline = 'middle';
-      for (let i = 0; i < n; i++) { const t = ((i * 7919) % 1000) / 1000, s = ((i * 104729) % 1000) / 1000; c.fillStyle = i % 2 ? pal.accent : a.color; c.fillText(suits[i % 4], x + t * W, y + s * H); }
+      c.font = `900 28px serif`; c.textAlign = 'center'; c.textBaseline = 'middle'; c.lineWidth = 3; c.strokeStyle = KEY; c.lineJoin = 'round';
+      for (let i = 0; i < n; i++) { const t = ((i * 7919) % 1000) / 1000, s = ((i * 104729) % 1000) / 1000; const xx = x + t * W, yy = y + s * H; c.strokeText(suits[i % 4], xx, yy); c.fillStyle = i % 2 ? pal.accent : a.color; c.fillText(suits[i % 4], xx, yy); }
       break;
     }
     case 'marquee': {
-      rr(c, x, y, W, H, 8); c.fillStyle = 'rgba(0,0,0,0.35)'; c.fill(); c.strokeStyle = a.color; c.lineWidth = 2; c.stroke();
+      rr(c, x, y, W, H, 8); keyFill(c, 'rgba(0,0,0,0.45)', 2.5);
       const n = Math.round(W / 14);
-      for (let i = 0; i <= n; i++) for (const yy of [y, y + H]) { c.beginPath(); c.arc(x + (i * W) / n, yy, 2.6, 0, Math.PI * 2); c.fillStyle = a.color; c.fill(); }
+      for (let i = 0; i <= n; i++) for (const yy of [y, y + H]) { c.beginPath(); c.arc(x + (i * W) / n, yy, 3, 0, Math.PI * 2); keyFill(c, a.color, 1.2); }
       break;
     }
     default: break;
@@ -405,7 +456,7 @@ export function buildStatic(c, F, W, H, DPR) {
     if (l.title) printText(c, l.text, l.x, l.y, Math.max(12, l.px * 0.9), { chrome: pal.title, glow: 6, spacing: '1px' });
     else if (l.sub) printText(c, l.text, l.x, l.y, Math.max(7, l.px * 0.9), { fill: pal.ink, spacing: '2px' });
     else if (l.chrome) printText(c, l.text, l.x, l.y, Math.max(8, l.px * 0.8), { chrome: pal.title });
-    else printText(c, l.text, l.x, l.y, Math.max(7, l.px * 0.75), { fill: l.color || pal.ink });
+    else plateText(c, l.text, l.x, l.y, Math.max(7, l.px * 0.7), l.color || pal.accent, l.ink || '#ffffff');
   }
 
   // exit well between the flippers
@@ -574,69 +625,14 @@ export function buildStatic(c, F, W, H, DPR) {
 }
 
 // ---------------------------------------------------------------------------
-// Machine select: nine backglass cards
+// Machine thumbnails for the lobby strip (a real render of the playfield)
 // ---------------------------------------------------------------------------
-export const selectCards = []; // {x,y,w,h,idx}
-export function drawSelect(ctx, W, H, machines, balance, pressed, now) {
-  const bg = ctx.createLinearGradient(0, 0, 0, H); bg.addColorStop(0, '#15080c'); bg.addColorStop(1, '#05030a');
-  ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
-  // marquee header (kept clear of the DOM HUD along the top edge)
-  const hudH = 52;
-  const ts = Math.min(40, W * 0.1);
-  const top = hudH + ts * 0.7;
-  printText(ctx, 'SLINGO', W / 2, top, ts, { chrome: ['#ffd23f', '#ff3b1f'], glow: 14, spacing: '3px' });
-  printText(ctx, 'PICK YOUR MACHINE', W / 2, top + ts * 0.72, Math.min(13, W * 0.033), { fill: '#fff1c1', spacing: '3px' });
-  const bulbsY = top + ts * 1.15, n = Math.max(1, Math.round(W / 16));
-  for (let i = 0; i <= n; i++) { const lit = (i + Math.floor(now / 160)) % 3 === 0; ctx.beginPath(); ctx.arc((i * W) / n, bulbsY, 2.5, 0, Math.PI * 2); ctx.fillStyle = lit ? '#ffd23f' : '#4a3010'; ctx.shadowColor = '#ffd23f'; ctx.shadowBlur = lit ? 8 : 0; ctx.fill(); ctx.shadowBlur = 0; }
-
-  const gridTop = bulbsY + 10, gridBottom = H - 64;
-  const cols = 3, rows = 3, gap = Math.max(8, W * 0.02);
-  const cw = Math.min((W - gap * (cols + 1)) / cols, 230), ch = Math.min((gridBottom - gridTop - gap * (rows + 1)) / rows, cw * 1.45);
-  const gx = (W - (cw * cols + gap * (cols - 1))) / 2, gy = gridTop + (gridBottom - gridTop - (ch * rows + gap * (rows - 1))) / 2;
-  selectCards.length = 0;
-  machines.forEach((m, idx) => {
-    const col = idx % cols, row = Math.floor(idx / cols);
-    const x = gx + col * (cw + gap), y = gy + row * (ch + gap);
-    selectCards.push({ x, y, w: cw, h: ch, idx });
-    const pal = m.palette, cost = buyIn(m), locked = balance + 1e-9 < cost, down = pressed === idx;
-    ctx.save();
-    if (down) { ctx.translate(x + cw / 2, y + ch / 2); ctx.scale(0.96, 0.96); ctx.translate(-x - cw / 2, -y - ch / 2); }
-    // wood frame
-    ctx.save(); ctx.translate(0, 5); rr(ctx, x, y, cw, ch, 8); ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.shadowColor = '#000'; ctx.shadowBlur = 16; ctx.fill(); ctx.restore();
-    rr(ctx, x, y, cw, ch, 8);
-    const wg = ctx.createLinearGradient(x, y, x + cw, y + ch); wg.addColorStop(0, pal.wood[1]); wg.addColorStop(1, pal.wood[0]);
-    ctx.fillStyle = wg; ctx.fill();
-    ctx.save(); rr(ctx, x, y, cw, ch, 8); ctx.clip(); ctx.globalAlpha = 0.6; ctx.fillStyle = getGrain(ctx); ctx.fillRect(x, y, cw, ch); ctx.restore();
-    // backglass panel: art on top, a dark info card below
-    const px = x + 6, py = y + 6, pw = cw - 12, ph = ch - 12, split = py + ph * 0.6;
-    rr(ctx, px, py, pw, ph, 5);
-    const fg = ctx.createLinearGradient(0, py, 0, py + ph); fg.addColorStop(0, pal.field[0]); fg.addColorStop(1, pal.field[1]);
-    ctx.fillStyle = fg; ctx.fill();
-    ctx.save(); rr(ctx, px, py, pw, ph, 5); ctx.clip();
-    ctx.globalAlpha = 0.4; drawArt(ctx, null, { kind: 'burst', x: px + pw / 2, y: py + ph * 0.36, R: pw * 0.6, color: pal.accent2 }, pal); ctx.globalAlpha = 1;
-    drawMotif(ctx, m.motif, px + pw / 2, py + ph * 0.38, Math.min(pw, ph) * 0.17, withAlpha(pal.accent, 0.95));
-    drawMotif(ctx, m.motif, px + pw * 0.14, py + ph * 0.42, 6, withAlpha(pal.accent3, 0.8)); drawMotif(ctx, m.motif, px + pw * 0.86, py + ph * 0.42, 6, withAlpha(pal.accent3, 0.8));
-    let tsz = ph * 0.14;
-    tsz = Math.min(tsz, tsz * ((pw * 0.9) / Math.max(1, printWidth(ctx, m.name, tsz))));
-    printText(ctx, m.name, px + pw / 2, py + ph * 0.13, tsz, { chrome: pal.title, glow: 4 });
-    // info card
-    ctx.fillStyle = 'rgba(8,6,4,0.82)'; ctx.fillRect(px, split, pw, py + ph - split);
-    ctx.fillStyle = pal.accent2; ctx.fillRect(px, split, pw, 2);
-    const sr = Math.min(5.5, pw * 0.03), rowH = (py + ph - split) / 3;
-    for (let i = 0; i < 5; i++) drawMotif(ctx, 'star', px + pw / 2 + (i - 2) * sr * 2.6, split + rowH * 0.5, sr, i < m.stars ? '#ffd23f' : 'rgba(255,255,255,0.18)');
-    const prof = PROFILES[m.profile];
-    printText(ctx, prof.name, px + pw / 2, split + rowH * 1.5, Math.min(10, rowH * 0.7), { fill: '#fff1c1', stroke: 'rgba(0,0,0,0.6)' });
-    const money = (v) => fmtMoney(v).replace('.00', '');
-    dmText(ctx, `${money(m.stakes[0])}-${money(m.stakes[1])} BALLS · IN ${money(cost)}`, px + pw / 2, split + rowH * 2.5, Math.min(8, rowH * 0.55, pw / 22), AMBER, { align: 'center', glow: 6 });
-    if (locked) {
-      rr(ctx, px, py, pw, ph, 5); ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fill();
-      dmText(ctx, `BUY-IN ${money(cost)}`, px + pw / 2, py + ph * 0.4, Math.min(9, ph * 0.07), '#ff6a6a', { align: 'center', glow: 6, panel: true });
-    }
-    ctx.restore();
-    chromeStroke(ctx, () => rr(ctx, px, py, pw, ph, 5), 2);
-    ctx.restore();
-  });
-  dmText(ctx, `BALANCE ${fmtMoney(balance)}`, W / 2, H - 38, 11, AMBER, { align: 'center', glow: 8, panel: true });
+export function renderThumb(spec, w, h, realizeFn) {
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+  const c = cv.getContext('2d');
+  const F = realizeFn(spec, 26, 22, w - 52, h - 44);
+  buildStatic(c, F, w, h, 1);
+  return cv.toDataURL('image/png');
 }
 
 export function drawBallSprite(ctx, x, y, radius, type, { glow = 10, shadow = true } = {}) {

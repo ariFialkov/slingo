@@ -22,10 +22,19 @@ standalone app (works offline after first load). `./build.sh` produces a clean
 
 ## The floor
 
-The game opens on the machine floor: nine backglass cards. Each machine has its
-own look, palette, layout, danger zones, risk profile (stars) and a range of
-allowed ball bets, like the stakes at a row of poker tables. A machine's buy-in
-is twenty of its minimum ball; the card dims until your balance covers it.
+The game opens in the **lobby**: an overlay on the live machine, which runs
+in attract mode underneath (free demo balls roll the table so you can watch
+the layout in action before you bet). The lobby shows the machine's name,
+stars, risk profile, ball range and buy-in; **‹ ›** arrows (or the keyboard
+arrows) step through the nine machines, **☰ ALL MACHINES** opens a horizontal
+strip of playfield thumbnails, and **tapping anywhere lifts the overlay** and
+puts the machine in play. In play, the ☰ button in the bottom bar brings the
+strip back once the field is empty. A machine's buy-in is twenty of its
+minimum ball; the lobby says so if your balance doesn't cover it.
+
+The UI is deliberately clean and modern — glass pills, one accent colour —
+while the machines themselves are the vintage part: wood rails, chrome and
+rubber, printed plates and ribbons, sunburst backglasses, halftone motifs.
 
 | # | Machine | ★ | Profile | Balls | Buy-in | Signature features |
 | - | --- | - | --- | --- | --- | --- |
@@ -61,8 +70,8 @@ composed per machine in `js/machines.js`.
   Bronze $1, Silver $5, Gold $10, Platinum $25, Diamond $100.
 - Launch as fast as you can pull; multiple balls play out at once, each with
   its own floating running total. Balls bounce off each other too.
-- **◂ MACHINES** returns to the floor once the field is empty. A machine never
-  changes under you — no random layouts, no auto-switching.
+- **☰** (bottom bar) opens the machine strip once the field is empty. A machine
+  never changes under you — no random layouts, no auto-switching.
 
 ## Components
 

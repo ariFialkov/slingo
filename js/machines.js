@@ -19,6 +19,10 @@ export const MACHINES = [
     signature: 'ROUTE 66 twin lanes · BLUE PLATE reactor',
     build(s) {
       art(s, { kind: 'road', u: 0.42, v: 0.06, w: 0.16, h: 0.9 });
+      s.art.unshift({ kind: 'rays', u: 0.2, v: 0.14, colors: ['#f4e7c6', '#b9ddd3'], n: 22 });
+      art(s, { kind: 'bigmotif', motif: 'star', u: 0.5, v: 0.6, R: 0.12, color: '#d62839', alpha: 0.55 });
+      art(s, { kind: 'ribbon', text: 'ROUTE 66', u: 0.12, v: 0.24, size: 0.028, color: '#1f3a4d', ink: '#f4e7c6' });
+      art(s, { kind: 'speedlines', u: 0.6, v: 0.5, w: 0.26, h: 0.12, color: '#2ec4b6', n: 5, dir: -1 });
       art(s, { kind: 'checker', u: 0.02, v: 0.83, w: 0.3, h: 0.03, angle: 0.45, colors: ['#1f3a4d', '#f4e7c6'] });
       art(s, { kind: 'checker', u: 0.6, v: 0.83, w: 0.3, h: 0.03, angle: -0.45, colors: ['#1f3a4d', '#f4e7c6'] });
       art(s, { kind: 'burst', u: 0.2, v: 0.12, R: 0.16, color: '#2ec4b6', alpha: 0.35 });
@@ -43,6 +47,9 @@ export const MACHINES = [
     signature: 'BIG WAVE ramp · RIP TIDE kickout · THE BARREL',
     build(s) {
       art(s, { kind: 'halftone', u: 0.02, v: 0.02, w: 0.96, h: 0.35, color: '#ff8c42', alpha: 0.25 });
+      s.art.unshift({ kind: 'rays', u: 0.2, v: 0.14, colors: ['#0b5f9e', '#1478bd'], n: 20 });
+      art(s, { kind: 'bigmotif', motif: 'wave', u: 0.5, v: 0.34, R: 0.16, color: '#5ee1ff', alpha: 0.5 });
+      art(s, { kind: 'ribbon', text: 'HANG TEN', u: 0.7, v: 0.42, size: 0.026, color: '#ff8c42', ink: '#fff4d6', angle: -0.15 });
       art(s, { kind: 'burst', u: 0.2, v: 0.14, R: 0.2, color: '#ffe66d', alpha: 0.35 });
       art(s, { kind: 'waves', u: 0.02, v: 0.8, w: 0.88, h: 0.16, colors: ['#5ee1ff', '#ffffff'] });
       art(s, { kind: 'waves', u: 0.02, v: 0.52, w: 0.88, h: 0.1, colors: ['#5ee1ff', '#0b5f9e'], alpha: 0.4 });
@@ -67,6 +74,10 @@ export const MACHINES = [
     signature: 'AMP STACK · VOLUME targets · BACKSTAGE kickout',
     build(s) {
       art(s, { kind: 'flames', u: 0.02, v: 0.98, w: 0.88, h: 0.34, colors: ['#ff3b1f', '#ffd400', '#fff1c1'] });
+      s.art.unshift({ kind: 'rays', u: 0.5, v: 0.2, colors: ['#1a1a1a', '#2a2410'], n: 24 });
+      art(s, { kind: 'bigmotif', motif: 'note', u: 0.24, v: 0.66, R: 0.09, color: '#ffd400', alpha: 0.7 });
+      art(s, { kind: 'ribbon', text: 'LIVE TONITE', u: 0.5, v: 0.36, size: 0.026, color: '#ff3b1f', ink: '#fff1c1', angle: -0.08 });
+      art(s, { kind: 'speedlines', u: 0.62, v: 0.36, w: 0.22, h: 0.1, color: '#ffd400', n: 4, dir: -1 });
       art(s, { kind: 'checker', u: 0.02, v: 0.09, w: 0.24, h: 0.025, angle: 0, colors: ['#ffffff', '#1a1a1a'] });
       art(s, { kind: 'text', u: 0.52, v: 0.44, text: 'ROCK', size: 0.16, color: '#ff3b1f', alpha: 0.18, angle: -0.35 });
       art(s, { kind: 'bolts', u: 0.62, v: 0.5, w: 0.2, h: 0.2, color: '#ffd400', n: 3 });
@@ -91,6 +102,10 @@ export const MACHINES = [
     signature: 'THE JOLT U-turn kicker · TESLA magnets · FUSES',
     build(s) {
       art(s, { kind: 'circuit', u: 0.02, v: 0.02, w: 0.88, h: 0.96, color: '#00e5ff', alpha: 0.22 });
+      s.art.unshift({ kind: 'rays', u: 0.5, v: 0.55, colors: ['#0a2a2a', '#0e3838'], n: 16 });
+      art(s, { kind: 'dots', u: 0.02, v: 0.02, w: 0.88, h: 0.96, color: '#00e5ff', alpha: 0.18 });
+      art(s, { kind: 'bigmotif', motif: 'bolt', u: 0.16, v: 0.4, R: 0.08, color: '#ffe600', alpha: 0.8 });
+      art(s, { kind: 'ribbon', text: '10,000 VOLTS', u: 0.5, v: 0.34, size: 0.024, color: '#ffe600', ink: '#111' });
       art(s, { kind: 'hazard', u: 0.36, v: 0.13, w: 0.22, h: 0.02 });
       art(s, { kind: 'bolts', u: 0.1, v: 0.6, w: 0.16, h: 0.16, color: '#ffe600', n: 2 });
       art(s, { kind: 'bolts', u: 0.7, v: 0.66, w: 0.16, h: 0.14, color: '#ffe600', n: 2 });
@@ -113,6 +128,10 @@ export const MACHINES = [
     signature: 'PIT LANES both sides · CHICANE · PACE CAR',
     build(s) {
       art(s, { kind: 'road', u: 0.36, v: 0.06, w: 0.28, h: 0.9, curve: true });
+      s.art.unshift({ kind: 'rays', u: 0.5, v: 0.12, colors: ['#3a3f47', '#4a5059'], n: 20 });
+      art(s, { kind: 'bigmotif', motif: 'flag', u: 0.5, v: 0.42, R: 0.07, color: '#ffffff', alpha: 0.6 });
+      art(s, { kind: 'ribbon', text: 'FINAL LAP', u: 0.5, v: 0.55, size: 0.024, color: '#e10600', ink: '#fff' });
+      art(s, { kind: 'speedlines', u: 0.06, v: 0.62, w: 0.2, h: 0.1, color: '#ffffff', n: 4, dir: 1 });
       art(s, { kind: 'checker', u: 0.02, v: 0.06, w: 0.18, h: 0.03, angle: 0, colors: ['#ffffff', '#1c1f25'] });
       art(s, { kind: 'checker', u: 0.3, v: 0.83, w: 0.4, h: 0.03, angle: 0, colors: ['#ffffff', '#1c1f25'] });
       art(s, { kind: 'stripes', u: 0.02, v: 0.6, w: 0.88, h: 0.2, colors: ['#e10600', '#ffffff'], alpha: 0.25 });
@@ -139,6 +158,9 @@ export const MACHINES = [
     signature: 'BLACK HOLE intersection · WORMHOLE warp · GRAVITY WELL',
     build(s) {
       art(s, { kind: 'stars', u: 0.02, v: 0.02, w: 0.88, h: 0.96, color: '#ffffff', n: 60 });
+      s.art.unshift({ kind: 'rays', u: 0.5, v: 0.5, colors: ['#150b2e', '#1e1040'], n: 24 });
+      art(s, { kind: 'ribbon', text: 'WARP 9', u: 0.5, v: 0.34, size: 0.024, color: '#ff3cac', ink: '#fff' });
+      art(s, { kind: 'bigmotif', motif: 'planet', u: 0.8, v: 0.68, R: 0.06, color: '#2ef2ff', alpha: 0.8 });
       art(s, { kind: 'halftone', u: 0.5, v: 0.3, w: 0.4, h: 0.5, color: '#ff3cac', alpha: 0.2 });
       art(s, { kind: 'planet', u: 0.5, v: 0.5, R: 0.2, colors: ['#7b2cff', '#2ef2ff'] });
       art(s, { kind: 'comet', u: 0.14, v: 0.1, w: 0.3, h: 0.1, color: '#2ef2ff' });
@@ -161,6 +183,9 @@ export const MACHINES = [
     signature: 'PORTCULLIS · MOAT · DUNGEON kickout',
     build(s) {
       art(s, { kind: 'bricks', u: 0.02, v: 0.02, w: 0.88, h: 0.96, color: '#23262d', alpha: 0.5 });
+      s.art.unshift({ kind: 'rays', u: 0.5, v: 0.45, colors: ['#4a4f5a', '#555b67'], n: 16 });
+      art(s, { kind: 'bigmotif', motif: 'crown', u: 0.5, v: 0.32, R: 0.08, color: '#ffc300', alpha: 0.75 });
+      art(s, { kind: 'ribbon', text: 'HOLD THE LINE', u: 0.5, v: 0.535, size: 0.022, color: '#c1121f', ink: '#f5e6c8' });
       art(s, { kind: 'crenels', u: 0.02, v: 0.085, w: 0.7, h: 0.04, color: '#f5e6c8' });
       art(s, { kind: 'banner', u: 0.12, v: 0.14, w: 0.06, h: 0.14, color: '#c1121f' });
       art(s, { kind: 'banner', u: 0.62, v: 0.14, w: 0.06, h: 0.14, color: '#3a86ff' });
@@ -187,6 +212,9 @@ export const MACHINES = [
     signature: 'LAVA FLOW maze · MAGMA danger zone · ERUPTION',
     build(s) {
       art(s, { kind: 'mountain', u: 0.14, v: 0.28, w: 0.7, h: 0.22, color: '#0d0402' });
+      s.art.unshift({ kind: 'rays', u: 0.42, v: 0.2, colors: ['#2b0a05', '#4a1206'], n: 22 });
+      art(s, { kind: 'bigmotif', motif: 'flame', u: 0.5, v: 0.76, R: 0.1, color: '#ff6a00', alpha: 0.8 });
+      art(s, { kind: 'ribbon', text: '3000°', u: 0.82, v: 0.42, size: 0.024, color: '#ff1f1f', ink: '#ffe3c2' });
       art(s, { kind: 'lava', u: 0.02, v: 0.02, w: 0.88, h: 0.96, color: '#ff6a00', alpha: 0.5 });
       art(s, { kind: 'flames', u: 0.02, v: 0.98, w: 0.88, h: 0.4, colors: ['#ff1f1f', '#ff6a00', '#ffd000'] });
       art(s, { kind: 'halftone', u: 0.02, v: 0.02, w: 0.88, h: 0.3, color: '#ffd000', alpha: 0.18 });
@@ -214,7 +242,9 @@ export const MACHINES = [
       art(s, { kind: 'curtain', u: 0.02, v: 0.02, w: 0.1, h: 0.96, color: '#e63946' });
       art(s, { kind: 'curtain', u: 0.8, v: 0.28, w: 0.1, h: 0.55, color: '#e63946' });
       art(s, { kind: 'cards', u: 0.16, v: 0.06, w: 0.62, h: 0.9, color: '#ffffff', alpha: 0.12, n: 14 });
-      art(s, { kind: 'burst', u: 0.5, v: 0.42, R: 0.24, color: '#ffd700', alpha: 0.25 });
+      s.art.unshift({ kind: 'rays', u: 0.5, v: 0.42, colors: ['#0c0c14', '#2a2208'], n: 24 });
+      art(s, { kind: 'bigmotif', motif: 'seven', u: 0.5, v: 0.55, R: 0.09, color: '#e63946', alpha: 0.7 });
+      art(s, { kind: 'ribbon', text: 'WIN BIG', u: 0.5, v: 0.32, size: 0.024, color: '#ffd700', ink: '#111' });
       art(s, { kind: 'marquee', u: 0.2, v: 0.06, w: 0.5, h: 0.09, color: '#ffd700' });
       slingshots(s);
       bumperTriangle(s, 0.5, 0.21, 0.042, 0.135, [+1, +1, +1], ['7', '7', '7']);
