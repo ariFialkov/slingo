@@ -77,12 +77,12 @@ composed per machine in `js/machines.js`.
 
 | Component | Indicator | What it does |
 | --- | --- | --- |
-| **Reactor** (each machine's big-name cap) | `+++` | Big pop bumper with a marquee bulb ring; takes a large share of the remaining gap. |
+| **Reactor** (each machine's big-name cap) | `+++` | Big pop bumper with a marquee bulb ring; 50% of the bet per hit. |
 | **Bonus discs** | `+++` | Extra big-pop caps. |
 | **Pop bumpers** | `++` / `−−` | Classic caps printed with the machine's motif; kick the ball away. |
 | **Moving bumper** | `++` / `−−` | A pop bumper sliding back and forth on a chrome rail. |
 | **Magnets** | `++` / `−−` | Bend nearby ball paths toward them; score on contact. |
-| **Slingshots / kicker triangles** | `−−` (the pair above the flippers) / `++` | Rubber-banded plastics that kick off every edge. |
+| **Slingshots / kicker triangles** | `−` (the pair above the flippers) / `++` | Rubber-banded plastics that kick off every edge. |
 | **Signed rails** | `++` / `−−` | Rubber bands between posts. |
 | **Kicker pins** | `+` / `−` | Posts with green/red rubber rings. |
 | **Drop-target bank** | `+ · BANK +++` | Three targets that fold down when hit; clearing all three pays `+++` and the bank resets. |
@@ -97,8 +97,8 @@ composed per machine in `js/machines.js`.
 | **Auto-flippers** | pips under the ball | React automatically when a ball drops onto them, 1–3 charges per ball by profile; once spent, the ball drains. |
 | **OUTHOLE** | `?` | The well between the flippers; settles the bet. |
 
-The number of glyphs is the **tier**: the share of the remaining gap the
-component takes (`+` ≈ 12–30%, `++` ≈ 30–55%, `+++` ≈ 55–95%).
+The number of glyphs is the **tier**, a fixed fraction of the bet: `+` 10%,
+`++` 20%, `+++` 50% (a cleared bank 50%); `−` 5%, `−−` 10%, `−−−` 20%.
 
 ## Risk profiles
 
@@ -118,28 +118,39 @@ zero; the stars only describe variance.
 ## How the outcome works
 
 Every ball is an isolated bet at the ball's bet value, decided the moment it is
-launched: a multiplier is drawn from the machine's prize table, fixing the
-ball's **prize**. The physics that follows is real but purely visual — and it
-is built so the ending never takes anything away:
+created: a multiplier is drawn from the machine's prize table, fixing the
+ball's **prize**. Nothing the player does afterwards can change it — and the
+table is built so that what you watch is honest and the ending never takes
+anything away:
 
+- **Component values are fixed.** `+` is 10% of the bet, `++` 20%, `+++` 50%,
+  a cleared drop-target bank 50%; `−` takes 5%, `−−` 10%, `−−−` 20%. What a
+  component says is what it pays, on every hit, for every ball.
+- **The physics is deterministic.** Everything random inside the engine comes
+  from the ball's own seeded generator, time is a fixed-step clock, and the
+  same engine runs headless in a worker. A ball launched with the same power
+  and seed follows exactly the same path.
+- **The launch is planned.** While you look at a machine, the planner
+  simulates 64 launch powers × 4 seeds and records the hits each path
+  collects. When you release the plunger, the game picks the candidate
+  **nearest your pull** whose fixed hits add up to the drawn prize — first
+  looking within ±6% of your pull for a path that lands within ×1.5 of the
+  prize, then widening the power window (±12%, ±25%, any) and loosening the
+  bonus (×3, ×8, ×25) — and fires the ball at that power with that seed. The
+  charge you see is yours; the launch is the closest path that tells the
+  truth.
 - **No ball ends at zero.** Every table's lowest outcome is a consolation of
   ×0.2 the bet; the winning outcomes are rescaled so EV stays at 96%.
-- **Every ball starts the same.** A ball is launched carrying 10% of its bet
-  as credit, below the consolation floor, so the first hits of every ball —
-  consolation or jackpot — climb. Nothing at launch tells the two apart.
-- **The total steers toward an aim below the prize**: prize ÷ m for a bonus
-  multiplier m between ×1.25 and ×25. + components close the gap; once the
-  total is near the aim, + and − keep nudging it up and down.
+- **Every ball starts the same**, carrying 10% of its bet as credit, below the
+  consolation floor. Nothing at launch tells a consolation ball from a jackpot.
 - **The total can never pass the prize.** A + hit on a ball that has reached
   its prize reads `MAX` (its running total turns gold) and − hits still take a
-  little, so the field stays alive. The total also never drops below one step.
-- **Every exit is a bonus, never a cut.** When a ball is swallowed — outhole,
-  hole, basket — the exit reveals the multiplier that lifts its running total
-  to the prize (`$6.50 × 2`), or a small `+ $0.40` nudge, or `MAX`. The
-  reconciliation is exact wherever and whenever the ball lands.
-- Awards are always multiples of 5% of the stake. The result card shows the
-  prize (green if it is at least the bet, red otherwise) and its bet-to-prize
-  multiplier.
+  little. The total also never drops below one step.
+- **Every exit is a bonus, never a cut.** Outhole, holes and baskets reveal
+  the multiplier that lifts the running total to the prize (`$6.50 × 2`), a
+  small `+ $0.40` nudge, or `MAX`. On a planned path this is usually ×1 to
+  ×1.5; it is exact wherever the ball lands, and it is all that changes if
+  another ball's spinner or targets nudge a path off its plan.
 - Balls rattling on one component are kicked loose; gravity ramps at 12 s and
   a ball is force-settled at 22 s.
 
@@ -153,7 +164,7 @@ one bar (a resting ball drops them), and sealed islands like the U-turn's
 middle are exempt.
 
 ```sh
-node tools/verify-rtp.js   # 7 tables at 96% EV with no zero; steered balls never cut at the exit; 9 machines audited + trap-scanned
+node tools/verify-rtp.js   # 7 tables at 96% EV with no zero; fixed hits never cut at the exit; engine deterministic; 9 machines audited + trap-scanned
 node tools/gen-icons.js    # regenerate PWA icons (dependency-free PNG encoder)
 ```
 
@@ -165,10 +176,12 @@ style.css             layout, DMD readouts, chrome buttons, safe-area handling
 js/config.js          RTP target, risk profiles (prize tables + physics), ball types, buy-ins
 js/layout.js          the layout kit: cabinet, primitives, pockets (pin field, spinner maze, twin lanes, U-turn, intersection…)
 js/machines.js        the nine machines: style, palette, stakes, signature features
-js/field.js           deterministic scoring/steering, layout audit + trap scan, spec → pixels
+js/field.js           outcomes + fixed hit values, layout audit + trap scan, spec → pixels
+js/physics.js         the deterministic pinball engine (shared by the table and the planner)
+js/planner.js         module worker: simulates launch powers × seeds, streams candidate paths
 js/render.js          retro renderer (wood, chrome, rubber, caps, inserts, printed art) + machine floor
 js/font.js            5x7 dot-matrix font + screen-print/chrome lettering (no webfont)
-js/main.js            plunger, pinball physics, components, auto-flippers, frame loop
+js/main.js            plunger, launch planning, scoring hooks, HUD/lobby, frame loop
 js/audio.js           tiny WebAudio synth (no assets)
 sw.js                 service worker (offline cache)
 manifest.json         PWA manifest

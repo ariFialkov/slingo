@@ -47,8 +47,8 @@ export function newSpec(m) {
 
 // The classic slingshot pair above the flippers (always −).
 export function slingshots(spec, sign = -1) {
-  spec.tris.push({ pts: [[0.02, 0.69], [0.02, 0.82], [0.16, 0.8]], sign, tier: 2, sling: true });
-  spec.tris.push({ pts: [[LANE_X, 0.66], [LANE_X, 0.79], [LANE_X - 0.13, 0.77]], sign, tier: 2, sling: true });
+  spec.tris.push({ pts: [[0.02, 0.69], [0.02, 0.82], [0.16, 0.8]], sign, tier: 1, sling: true });
+  spec.tris.push({ pts: [[LANE_X, 0.66], [LANE_X, 0.79], [LANE_X - 0.13, 0.77]], sign, tier: 1, sling: true });
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,7 @@
 // Slingo — plunger pinball on nine hand-built machines.
-import { BALL_TYPES, START_BALANCE, TOPUP_AMOUNT, PHYS, LAUNCH_CREDIT, fmtMoney, round2 } from './config.js';
-import { realize, rollMultiplier, awardFor, pickAim, exitMultiplier, flipperSegment } from './field.js';
+import { BALL_TYPES, START_BALANCE, TOPUP_AMOUNT, PHYS, LAUNCH_CREDIT, EXIT_BANDS, POWER_WINDOWS, fmtMoney, round2 } from './config.js';
+import { realize, rollMultiplier, applyHit, hitFraction, totalAfter, exitMultiplier, flipperSegment } from './field.js';
+import { createWorld, stepWorld, newBall, fire, resetFixtures, flipperAngle, makeRng, SUBSTEP } from './physics.js';
 import { MACHINES, buildMachine, buyIn, allowedTypes, machineProfile } from './machines.js';
 import {
   SIGN_COL, GATE_COL, AMBER, rr, polyPath, shade, withAlpha, chromeStroke, post, bumperCap,
@@ -18,6 +19,7 @@ const staticCanvas = document.createElement('canvas');
 const sctx = staticCanvas.getContext('2d');
 let W = 0, H = 0, DPR = 1;
 let board = null;
+let world = null;
 const fieldRect = { x: 0, y: 0, w: 0, h: 0 };
 const plunger = { maxPull: 0, knobY: 0 };
 
@@ -41,7 +43,10 @@ function layout() {
   const old = board;
   if (state.spec) {
     board = realize(state.spec, fieldRect.x, fieldRect.y, fw, fh);
+    world = createWorld(board, profile());
+    world.time = state.now;
     buildStatic(sctx, board, W, H, DPR);
+    requestPlan();
   }
   if (old && board) rescaleBalls(old, board);
   plunger.maxPull = H * 0.11;
@@ -75,6 +80,8 @@ const state = {
   effects: [],
   drag: null,        // {id, y0, pull}
   demoAt: 0,         // next attract-mode ball while in the lobby
+  acc: 0,            // fixed-step accumulator
+  plan: null,        // {key, cands, done} from the launch planner
   shake: { mag: 0, t: 0 },
   now: performance.now(),
   last: performance.now(),
@@ -86,7 +93,6 @@ state.machines = MACHINES;
 
 const ballType = () => BALL_TYPES[state.typeIdx];
 const profile = () => machineProfile(state.machine);
-const phys = (k) => (profile().physics && profile().physics[k] !== undefined ? profile().physics[k] : PHYS[k]);
 
 // Put a machine on the table (lobby or play) and refresh everything that
 // depends on it. The lobby is an overlay on this live machine.
@@ -283,26 +289,51 @@ canvas.addEventListener('pointerup', endDrag);
 canvas.addEventListener('pointercancel', (e) => { if (state.drag && e.pointerId === state.drag.id) state.drag = null; });
 
 const pull = () => (state.drag ? state.drag.pull : 0);
-// Speed that just carries a ball from the slot to the lane flap on this machine.
-function clearSpeed() {
-  const rise = board.lane.seatY - board.lane.flapY + PHYS.ballRadius * board.w;
-  return Math.sqrt(2 * phys('gravity') * board.h * rise);
-}
-// Launch speed is a pure function of the charge — deterministic. Below the
-// threshold the ball always falls back to the slot; at or above it the ball
-// always reaches the field, on every machine.
-function launchSpeed(p) {
-  const { threshold: th, weak, strong } = PHYS.launch;
-  const v = clearSpeed();
-  return p < th
-    ? v * (weak[0] + (weak[1] - weak[0]) * (p / th))
-    : v * (strong[0] + (strong[1] - strong[0]) * ((p - th) / (1 - th)));
-}
 const minClearPull = () => PHYS.launch.threshold;
+
+// ---------------------------------------------------------------------------
+// Launch planning: the outcome is drawn when the ball is created; the
+// planner's candidates (power, seed → fixed hits) let us fire the ball on the
+// path nearest the player's pull whose hits add up to that prize.
+// ---------------------------------------------------------------------------
+let planner = null;
+let planSeq = 0;
+try { planner = new Worker('js/planner.js', { type: 'module' }); } catch (e) { planner = null; }
+const planKey = () => `${state.machine.id}:${Math.round(fieldRect.x)},${Math.round(fieldRect.y)},${Math.round(fieldRect.w)},${Math.round(fieldRect.h)}`;
+function requestPlan() {
+  if (!planner || !state.machine) return;
+  const key = planKey();
+  if (state.plan && state.plan.key === key) return;
+  state.plan = { key, id: ++planSeq, cands: [], done: false };
+  planner.postMessage({ type: 'plan', id: planSeq, machineId: state.machine.id, rect: { x0: fieldRect.x, y0: fieldRect.y, w: fieldRect.w, h: fieldRect.h } });
+}
+if (planner) planner.onmessage = (e) => {
+  const msg = e.data;
+  if (!state.plan || msg.id !== state.plan.id) return;
+  state.plan.cands.push(...msg.cands);
+  state.plan.done = msg.done;
+};
+// Pick the candidate nearest the pull whose hits reach the prize with the
+// smallest exit bonus, widening the power window before loosening the bonus.
+function choosePath(ball, pullP) {
+  const cands = state.plan && state.plan.key === planKey() ? state.plan.cands : [];
+  if (!cands.length) return null;
+  const scored = cands.map((c) => ({ c, d: Math.abs(c.p - pullP), M: ball.target / totalAfter(ball.stake, ball.target, c.hits) }));
+  for (const win of POWER_WINDOWS) {
+    for (const band of EXIT_BANDS) {
+      let pick = null;
+      for (const s of scored) if (s.c.settled && s.d <= win && s.M <= band && (!pick || s.d < pick.d)) pick = s;
+      if (pick) return pick.c;
+    }
+  }
+  let pick = null;
+  for (const s of scored) if (!pick || s.M < pick.M) pick = s; // least the exit has to lift
+  return pick ? pick.c : null;
+}
 
 function launch(p, demo = false) {
   let ball = state.seated;
-  if (demo) { ball = makeBall(BALL_TYPES[0], 0); ball.demo = true; state.balls.push(ball); }
+  if (demo) { ball = newBall(world, (Math.random() * 1e9) >>> 0, { demo: true, type: BALL_TYPES[0], stake: 1, target: 0.2, total: 0.1, mult: 0.2 }); state.balls.push(ball); }
   if (!ball) {
     const type = ballType();
     if (type.bet > state.balance + 1e-9) { toast(`Not enough balance for a ${type.name} ball — tap ${$topup.textContent}`); return; }
@@ -313,12 +344,16 @@ function launch(p, demo = false) {
     // ball back into the slot costing nothing, so launching is never a skill test.
   }
   state.seated = null;
-  ball.seated = false;
-  ball.x = board.lane.x;
-  ball.y = board.lane.seatY - ball.r;
-  ball.vx = 0;
-  ball.vy = -launchSpeed(p);
-  ball.born = state.now; ball.ax = ball.x; ball.ay = ball.y; ball.at = state.now;
+  // A launch into an empty field starts from the clean fixtures every plan assumes.
+  if (state.balls.every((b) => b === ball || b.dying)) { resetFixtures(world); world.moverT0 = world.time; }
+  let fireP = p, seed = ball.seed;
+  if (!demo && p >= PHYS.launch.threshold) {
+    const c = choosePath(ball, p);
+    if (c) { fireP = c.p; seed = c.seed; ball.planned = true; ball.plan = c.hits; ball.log = []; }
+  }
+  ball.seed = seed; ball.rng = makeRng(seed);
+  ball.power = fireP;
+  fire(world, ball, fireP);
   sfx.fire(p);
   shake(0.2 + 0.7 * p);
   state.effects.push({ type: 'puff', x: ball.x, y: ball.y, t0: state.now, dur: 350 });
@@ -326,15 +361,8 @@ function launch(p, demo = false) {
 }
 
 function makeBall(type, mult) {
-  const r = PHYS.ballRadius * board.w;
   const target = round2(mult * type.bet);
-  return {
-    x: board.lane.x, y: board.lane.seatY - r, vx: 0, vy: 0, r,
-    type, stake: type.bet, mult, target, total: round2(LAUNCH_CREDIT * type.bet), aim: pickAim(target, type.bet),
-    born: state.now, cd: new Map(), slowSince: 0, dying: null, hits: 0, flips: profile().flips,
-    lastComp: null, repeat: 0, ax: 0, ay: 0, at: state.now, popT: -1e9,
-    sides: new Map(), gcd: new Map(), seated: false, held: null, charged: false,
-  };
+  return newBall(world, (Math.random() * 1e9) >>> 0, { type, stake: type.bet, mult, target, total: round2(LAUNCH_CREDIT * type.bet) });
 }
 
 function shake(mag) {
@@ -345,41 +373,38 @@ function shake(mag) {
 // ---------------------------------------------------------------------------
 // Scoring
 // ---------------------------------------------------------------------------
-function award(ball, comp, sign, tier, x, y) {
-  if (!sign) return;
-  if (ball.demo) { comp.flashT = state.now; return; } // attract mode: lights only
-  const until = ball.cd.get(comp) || 0;
-  if (state.now < until) return;
-  ball.cd.set(comp, state.now + 160);
-  comp.flashT = state.now;
-  // Only a ball rattling on one component is silenced (and kicked loose);
-  // scoring never stops with age, so the field stays alive for the whole ball.
-  if (!comp.posts) {
-    if (comp === ball.lastComp) ball.repeat++; else { ball.lastComp = comp; ball.repeat = 0; }
-  }
-  if (ball.repeat >= 4) {
-    ball.vx += (Math.random() - 0.5) * 0.6 * board.h;
-    ball.vy -= 0.25 * board.h;
-    ball.repeat = 0;
-    return;
-  }
-  ball.hits++;
-  const a = awardFor(ball, sign, tier);
-  if (a === 0) {
-    // A + hit at the ceiling: the ball has already reached its prize.
-    if (sign > 0) { ball.maxT = state.now; state.effects.push({ type: 'float', x, y, text: 'MAX', color: AMBER, t0: state.now, dur: 800, size: 12 }); sfx.led(); }
-    else sfx.miss();
-    return;
-  }
-  if (state.now - ball.born > 10000) state.lateAwards++;
-  ball.total = round2(ball.total + a);
-  ball.popT = state.now;
-  (a > 0 ? sfx.fill : sfx.lose)();
-  state.effects.push({
-    type: 'float', x, y, text: (a > 0 ? '+' : '−') + fmtMoney(Math.abs(a)).slice(1),
-    color: a > 0 ? '#7dffb9' : '#ff8d8d', t0: state.now, dur: 1000, size: 13 + 2 * tier,
-  });
-}
+// Engine hooks: scoring, presentation and sound live here, not in the engine.
+const hooks = {
+  hit(ball, comp, sign, tier, x, y) {
+    if (ball.demo) return; // attract mode: lights only
+    if (ball.log) ball.log.push(sign * hitFraction(comp, tier, sign));
+    const a = applyHit(ball, sign, hitFraction(comp, tier, sign));
+    if (a === 0) {
+      // A + hit at the ceiling: the ball has already reached its prize.
+      if (sign > 0) { ball.maxT = state.now; state.effects.push({ type: 'float', x, y, text: 'MAX', color: AMBER, t0: state.now, dur: 800, size: 12 }); sfx.led(); }
+      else sfx.miss();
+      return;
+    }
+    if (world.time - ball.born > 10000) state.lateAwards++;
+    ball.total = round2(ball.total + a);
+    ball.popT = state.now;
+    (a > 0 ? sfx.fill : sfx.lose)();
+    state.effects.push({
+      type: 'float', x, y, text: (a > 0 ? '+' : '−') + fmtMoney(Math.abs(a)).slice(1),
+      color: a > 0 ? '#7dffb9' : '#ff8d8d', t0: state.now, dur: 1000, size: 13 + 2 * Math.min(3, tier),
+    });
+  },
+  settle(ball, x, y, where) { settle(ball, x, y, where); },
+  charge(ball) { state.balance -= ball.stake; state.launched++; updateHUD(); },
+  seat(ball) {
+    if (state.seated) return false;
+    state.seated = ball; updateHUD(); sfx.hit();
+    return true;
+  },
+  fx(o) { state.effects.push({ ...o, t0: state.now }); },
+  sfx(name, arg) { if (sfx[name]) sfx[name](arg); },
+  shake(mag) { shake(mag); },
+};
 
 function settle(ball, x, y, where) {
   if (!ball.charged || ball.demo) { // never reached the field / attract ball: no bet, no prize
@@ -393,7 +418,7 @@ function settle(ball, x, y, where) {
   const paid = ball.target;
   ball.dying = { t0: state.now, x, y };
   state.balance += paid;
-  state.settled.push({ machine: state.machine.id, target: ball.target, paid, mult: M, total: ball.total, hits: ball.hits, life: Math.round(state.now - ball.born) });
+  state.settled.push({ machine: state.machine.id, target: ball.target, paid, mult: M, total: ball.total, hits: ball.hits, life: Math.round(world.time - ball.born), planned: !!ball.planned, power: ball.power, onPlan: ball.plan ? JSON.stringify(ball.log) === JSON.stringify(ball.plan) : null });
   // The exit's bonus: "$6.50 × 2" for a real lift, "+$0.40" for a nudge,
   // "MAX" when the ball had already reached its prize. Never a cut.
   if (ball.hits > 0) {
@@ -426,328 +451,6 @@ const pending = [];
 function schedule(delay, fn) { pending.push({ at: state.now + delay, fn }); }
 
 // ---------------------------------------------------------------------------
-// Physics
-// ---------------------------------------------------------------------------
-const SUBSTEP = 1 / 240;
-
-function stepPhysics(dtTotal) {
-  let dt = Math.min(dtTotal, 0.05);
-  while (dt > 0) {
-    const h = Math.min(SUBSTEP, dt);
-    for (const mv of board.movers) { const s = Math.sin(state.now / 1000 * (2 * Math.PI / mv.period) + mv.phase); mv.x = mv.cx + mv.dx * mv.amp * s; mv.y = mv.cy + mv.dy * mv.amp * s; }
-    for (const b of state.balls) if (!b.dying && !b.seated && !b.held) integrate(b, h);
-    ballPairs();
-    dt -= h;
-  }
-  for (const b of state.balls) if (!b.dying && !b.seated) checkSensors(b);
-  state.balls = state.balls.filter((b) => !b.dying || state.now - b.dying.t0 < 360);
-}
-
-function flipperAngle(f) {
-  const t = state.now - f.flipT;
-  if (t < 0 || t > 380) return f.rest;
-  if (t < 110) return f.rest + (f.flip - f.rest) * (t / 110);
-  if (t < 200) return f.flip;
-  return f.flip + (f.rest - f.flip) * ((t - 200) / 180);
-}
-
-function integrate(b, h) {
-  const F = board;
-  const age = state.now - b.born;
-  let g = phys('gravity') * F.h;
-  if (age > PHYS.softLifeMs) g *= 1 + (age - PHYS.softLifeMs) / 3000;
-  b.vy += g * h;
-  // magnets pull nearby balls
-  for (const m of F.magnets) {
-    const dx = m.x - b.x, dy = m.y - b.y, d = Math.hypot(dx, dy);
-    if (d < m.range && d > 1e-6) { const a = 0.5 * F.h * (1 - d / m.range); b.vx += (dx / d) * a * h; b.vy += (dy / d) * a * h; }
-  }
-  const drag = Math.max(0, 1 - phys('drag') * h);
-  b.vx *= drag; b.vy *= drag;
-  const vmax = PHYS.maxSpeed * F.h;
-  const sp = Math.hypot(b.vx, b.vy);
-  if (sp > vmax) { b.vx *= vmax / sp; b.vy *= vmax / sp; }
-  b.prevY = b.y;
-  b.x += b.vx * h;
-  b.y += b.vy * h;
-
-  for (const s of F.walls) collideSegment(b, s, PHYS.restitutionWall);
-  for (const g of F.gates) for (const gd of g.guides) collideSegment(b, gd, PHYS.restitutionWall);
-  for (const sp2 of F.spinners) for (const post of sp2.posts) collideCircle(b, post, PHYS.restitutionPin, 0);
-  for (const o of F.oneways) {
-    // block only from the passed side
-    if ((b.x - o.x) * o.nx + (b.y - o.y) * o.ny > 0) collideSegment(b, o.seg, 0.4);
-  }
-  for (const bk of F.banks) {
-    for (const t of bk.targets) {
-      if (t.down) continue;
-      if (collideSegment(b, t.seg, 0.5)) {
-        t.down = true; t.flashT = state.now;
-        award(b, t, bk.sign, bk.tier, t.x, t.y - 14);
-        if (bk.targets.every((tt) => tt.down)) {
-          award(b, bk, +1, 3, bk.x, bk.y - 26);
-          bk.resetAt = state.now + 1600;
-          sfx.bonus();
-        }
-      }
-    }
-  }
-  for (const s of F.rails) {
-    if (collideSegment(b, s, PHYS.restitutionWall)) award(b, s, s.sign, s.tier, (s.a.x + s.b.x) / 2, (s.a.y + s.b.y) / 2 - 14);
-  }
-  for (const t of F.tris) {
-    let hit = false;
-    for (const e of t.edges) if (collideSegment(b, e, 0.7, 0.45 * F.h, t)) hit = true;
-    if (hit) award(b, t, t.sign, t.tier, t.cx, t.cy - 18);
-  }
-  for (const p of F.pins) {
-    if (collideCircle(b, p, PHYS.restitutionPin, 0)) {
-      if (p.sign) award(b, p, p.sign, p.tier, p.x, p.y - p.r - 10);
-      else p.flashT = state.now;
-    }
-  }
-  for (const bp of F.bumpers) {
-    if (collideCircle(b, bp, PHYS.restitutionBumper, PHYS.bumperKick * F.h)) {
-      award(b, bp, bp.sign, bp.tier, bp.x, bp.y - bp.r - 10);
-      shake(bp.tier === 3 ? 0.25 : 0.12);
-    }
-  }
-  for (const mv of F.movers) {
-    if (collideCircle(b, mv, PHYS.restitutionBumper, PHYS.bumperKick * F.h)) { award(b, mv, mv.sign, mv.tier, mv.x, mv.y - mv.r - 10); shake(0.12); }
-  }
-  for (const m of F.magnets) {
-    if (collideCircle(b, m, 0.5, 0)) award(b, m, m.sign, m.tier, m.x, m.y - m.r - 12);
-  }
-  for (const f of F.flippers) { f.angle = flipperAngle(f); collideSegment(b, flipperSegment(f), 0.5); }
-  if (b.x < F.x0 + b.r) { b.x = F.x0 + b.r; b.vx = Math.abs(b.vx) * 0.5; }
-  if (b.x > F.x0 + F.w - b.r) { b.x = F.x0 + F.w - b.r; b.vx = -Math.abs(b.vx) * 0.5; }
-  if (b.y < F.y0 + b.r) { b.y = F.y0 + b.r; b.vy = Math.abs(b.vy) * 0.5; }
-
-  const inLane = b.x > F.lane.left && b.y > F.lane.flapY; // below the flap, on the plunger side
-  if (Math.hypot(b.vx, b.vy) < 0.03 * F.h && !inLane) {
-    if (!b.slowSince) b.slowSince = state.now;
-    else if (state.now - b.slowSince > 450) { b.vx += (Math.random() - 0.5) * 0.4 * F.h; b.vy -= 0.15 * F.h; b.slowSince = 0; }
-  } else b.slowSince = 0;
-  if (Math.hypot(b.x - b.ax, b.y - b.ay) > b.r * 5) { b.ax = b.x; b.ay = b.y; b.at = state.now; }
-  else if (state.now - b.at > 2500 && !inLane) {
-    b.vx = (b.x < F.x0 + F.w / 2 ? 1 : -1) * (0.3 + Math.random() * 0.3) * F.h;
-    b.vy = -(0.5 + Math.random() * 0.3) * F.h;
-    b.at = state.now;
-  }
-}
-
-function collideSegment(b, s, e, kick = 0, kickAway = null) {
-  const abx = s.b.x - s.a.x, aby = s.b.y - s.a.y;
-  const len2 = abx * abx + aby * aby || 1e-9;
-  let t = ((b.x - s.a.x) * abx + (b.y - s.a.y) * aby) / len2;
-  t = Math.max(0, Math.min(1, t));
-  const cx = s.a.x + abx * t, cy = s.a.y + aby * t;
-  let nx = b.x - cx, ny = b.y - cy;
-  const d = Math.hypot(nx, ny);
-  if (d >= b.r) return false;
-  if (d < 1e-6) { nx = -aby; ny = abx; const l = Math.hypot(nx, ny) || 1; nx /= l; ny /= l; }
-  else { nx /= d; ny /= d; }
-  const pen = b.r - d;
-  b.x += nx * pen; b.y += ny * pen;
-  const vn = b.vx * nx + b.vy * ny;
-  if (vn < 0) {
-    b.vx -= (1 + e) * vn * nx;
-    b.vy -= (1 + e) * vn * ny;
-    const tx = -ny, ty = nx;
-    const vt = b.vx * tx + b.vy * ty;
-    b.vx -= vt * 0.04 * tx; b.vy -= vt * 0.04 * ty;
-  }
-  if (kick) {
-    let kx = nx, ky = ny;
-    if (kickAway) { kx = b.x - kickAway.cx; ky = b.y - kickAway.cy; const l = Math.hypot(kx, ky) || 1; kx /= l; ky /= l; }
-    b.vx += kx * kick; b.vy += ky * kick;
-  }
-  return true;
-}
-
-function collideCircle(b, c, e, kick) {
-  let nx = b.x - c.x, ny = b.y - c.y;
-  const d = Math.hypot(nx, ny);
-  const rr2 = b.r + c.r;
-  if (d >= rr2) return false;
-  if (d < 1e-6) { nx = 0; ny = -1; } else { nx /= d; ny /= d; }
-  const pen = rr2 - d;
-  b.x += nx * pen; b.y += ny * pen;
-  const vn = b.vx * nx + b.vy * ny;
-  if (vn < 0) { b.vx -= (1 + e) * vn * nx; b.vy -= (1 + e) * vn * ny; }
-  if (kick) { b.vx += nx * kick; b.vy += ny * kick; }
-  return true;
-}
-
-function ballPairs() {
-  const bs = state.balls;
-  for (let i = 0; i < bs.length; i++) {
-    const a = bs[i];
-    if (a.dying || a.held) continue;
-    for (let j = i + 1; j < bs.length; j++) {
-      const b = bs[j];
-      if (b.dying || b.held) continue;
-      let nx = b.x - a.x, ny = b.y - a.y;
-      const d = Math.hypot(nx, ny);
-      const rr2 = a.r + b.r;
-      if (d >= rr2 || d < 1e-6) continue;
-      nx /= d; ny /= d;
-      const pen = rr2 - d;
-      const wa = a.seated ? 0 : b.seated ? 1 : 0.5, wb = 1 - wa; // seated balls are immovable
-      a.x -= nx * pen * wa; a.y -= ny * pen * wa; b.x += nx * pen * wb; b.y += ny * pen * wb;
-      const rvn = (b.vx - a.vx) * nx + (b.vy - a.vy) * ny;
-      if (rvn < 0) {
-        const jimp = -(1 + 0.8) * rvn / 2;
-        if (!a.seated) { a.vx -= jimp * nx; a.vy -= jimp * ny; }
-        if (!b.seated) { b.vx += jimp * nx; b.vy += jimp * ny; }
-      }
-    }
-  }
-}
-
-function sideOf(b, s) { return Math.sign((s.b.x - s.a.x) * (b.y - s.a.y) - (s.b.y - s.a.y) * (b.x - s.a.x)); }
-function withinSpan(b, s) {
-  const abx = s.b.x - s.a.x, aby = s.b.y - s.a.y;
-  const t = ((b.x - s.a.x) * abx + (b.y - s.a.y) * aby) / (abx * abx + aby * aby || 1e-9);
-  return t >= 0 && t <= 1;
-}
-function crossed(b, comp, sensor, cooldown) {
-  const side = sideOf(b, sensor);
-  const prev = b.sides.get(comp);
-  b.sides.set(comp, side);
-  if (prev === undefined || prev === side || side === 0 || !withinSpan(b, sensor)) return false;
-  if (state.now < (b.gcd.get(comp) || 0)) return false;
-  b.gcd.set(comp, state.now + cooldown);
-  return true;
-}
-
-function gateCross(b, g) {
-  if (!crossed(b, g, g.sensor, 500)) return;
-  award(b, g, g.sign, g.tier, g.x - g.ax * (g.L + 12), g.y - g.ay * (g.L + 12));
-  const sp = Math.hypot(b.vx, b.vy);
-  let ax = g.ax, ay = g.ay;
-  // A kicker fires in its fixed direction (toward the U-turn's exit arm);
-  // other gates push the ball on along whichever way it was going.
-  if (g.dir) { ax *= g.dir; ay *= g.dir; }
-  else if (b.vx * ax + b.vy * ay < 0) { ax = -ax; ay = -ay; }
-  if (g.kind === 'boost') {
-    // Boosts fade once a ball outlives its soft life so a kicker loop can't
-    // keep a ball up forever (a U-turn kicker always still clears its arm).
-    const k = ageDecay(b, 4000);
-    const s = Math.max(sp * 1.6 * k, (g.kicker ? 1.4 : 0.9) * board.h * (g.kicker ? Math.max(0.78, k) : k));
-    b.vx = ax * s; b.vy = ay * s; sfx.fire(0.6); if (g.kicker) shake(0.3);
-  }
-  else if (g.kind === 'brake') { b.vx = ax * sp * 0.35; b.vy = ay * sp * 0.35; sfx.miss(); }
-  else if (g.kind === 'warp' && g.twin !== undefined) {
-    const t = board.gates[g.twin];
-    state.effects.push({ type: 'puff', x: b.x, y: b.y, t0: state.now, dur: 400 });
-    b.x = t.x + t.ax * (t.L + b.r * 2); b.y = t.y + t.ay * (t.L + b.r * 2);
-    const s = Math.max(sp * 0.8, 0.4 * board.h);
-    b.vx = t.ax * s; b.vy = t.ay * s;
-    b.sides.set(t, sideOf(b, t.sensor)); b.gcd.set(t, state.now + 600);
-    t.flashT = state.now; b.ax = b.x; b.ay = b.y; b.at = state.now;
-    state.effects.push({ type: 'puff', x: b.x, y: b.y, t0: state.now, dur: 400 });
-    sfx.flip();
-  }
-}
-const ageDecay = (b, span) => { const over = state.now - b.born - PHYS.softLifeMs; return over > 0 ? 1 / (1 + over / span) : 1; };
-function spinnerCross(b, sp) {
-  if (!crossed(b, sp, sp.sensor, 300)) return;
-  const speed = Math.hypot(b.vx, b.vy);
-  sp.omega = Math.max(10, Math.min(45, (speed / board.h) * 28)) * (sideOf(b, sp.sensor) > 0 ? 1 : -1);
-  sp.owner = b; sp.revs = 0; sp.flashT = state.now;
-  b.vx *= 0.72; b.vy *= 0.72;
-  const jit = (Math.random() - 0.5) * 0.25, c = Math.cos(jit), s = Math.sin(jit);
-  const vx = b.vx * c - b.vy * s, vy = b.vx * s + b.vy * c;
-  b.vx = vx; b.vy = vy;
-  sfx.led();
-}
-function onewayCross(b, o) {
-  // score when passing in the allowed direction (sensor = the flap line)
-  const side = (b.x - o.x) * o.nx + (b.y - o.y) * o.ny > 0 ? 1 : -1;
-  const prev = b.sides.get(o);
-  b.sides.set(o, side);
-  if (prev === -1 && side === 1 && withinSpan(b, o.seg)) { o.flashT = state.now; if (o.sign) award(b, o, o.sign, o.tier, o.x, o.y - 14); }
-}
-function updateSpinners(dt) {
-  for (const sp of board.spinners) {
-    if (Math.abs(sp.omega) < 0.3) { sp.omega = 0; continue; }
-    const before = sp.rot;
-    sp.rot += sp.omega * dt;
-    sp.omega *= Math.exp(-1.4 * dt);
-    if (Math.floor(before / (2 * Math.PI)) !== Math.floor(sp.rot / (2 * Math.PI)) && sp.revs < 5) {
-      sp.revs++;
-      const o = sp.owner;
-      if (o && !o.dying && state.balls.includes(o)) { o.cd.delete(sp); award(o, sp, sp.sign, sp.tier, sp.x, sp.y - 20); }
-    }
-  }
-  for (const bk of board.banks) {
-    if (bk.resetAt && state.now >= bk.resetAt) { bk.resetAt = 0; for (const t of bk.targets) { t.down = false; t.flashT = state.now; } sfx.flip(); }
-  }
-}
-
-function checkSensors(b) {
-  const F = board;
-  // The bet is placed the moment the ball clears the lane flap into the field.
-  if (!b.charged && !b.demo && b.y < F.lane.flapY) {
-    b.charged = true;
-    state.balance -= b.stake;
-    state.launched++;
-    updateHUD();
-  }
-  if (b.held) {
-    if (state.now >= b.held.until) {
-      const k = b.held.kick;
-      const e = 0.65 * F.h * Math.max(0.5, ageDecay(b, 4000));
-      b.x = k.ex; b.y = k.ey; b.vx = k.dir[0] * e; b.vy = k.dir[1] * e;
-      b.held = null; k.ejectT = state.now; b.ax = b.x; b.ay = b.y; b.at = state.now;
-      state.effects.push({ type: 'puff', x: b.x, y: b.y, t0: state.now, dur: 400 });
-      sfx.step();
-    }
-    return;
-  }
-  for (const g of F.gates) gateCross(b, g);
-  for (const sp of F.spinners) spinnerCross(b, sp);
-  for (const o of F.oneways) onewayCross(b, o);
-  for (const k of F.kickouts) {
-    if (Math.hypot(b.x - k.x, b.y - k.y) < k.r * 0.65) {
-      award(b, k, k.sign, k.tier, k.x, k.y - k.r - 12);
-      b.held = { until: state.now + 700, kick: k };
-      b.vx = b.vy = 0; b.x = k.x; b.y = k.y;
-      k.flashT = state.now;
-      sfx.fill();
-      return;
-    }
-  }
-  for (const hole of F.holes) {
-    if (Math.hypot(b.x - hole.x, b.y - hole.y) < hole.r * 0.62) { settle(b, hole.x, hole.y, hole); return; }
-  }
-  for (const f of F.flippers) {
-    const reach = f.len * 0.95;
-    const within = f.dir > 0 ? b.x > f.px - b.r && b.x < f.px + reach : b.x < f.px + b.r && b.x > f.px - reach;
-    if (within && b.vy > 0 && b.y > f.py - F.h * 0.085 && b.y < f.py + F.h * 0.02 && b.flips > 0 && state.now - f.flipT > 400) {
-      f.flipT = state.now;
-      b.flips--;
-      const k = PHYS.flipperKick * F.h;
-      b.vx = f.dir * k * (0.25 + Math.random() * 0.3);
-      b.vy = -k * (0.85 + Math.random() * 0.25);
-      b.y = Math.min(b.y, f.py - F.h * 0.02);
-      sfx.step(); shake(0.2);
-      state.effects.push({ type: 'puff', x: b.x, y: b.y, t0: state.now, dur: 300 });
-    }
-  }
-  // A charge too weak to clear the flap drops the ball back into the slot,
-  // where it re-seats un-bet and can simply be launched again.
-  if (!b.charged && !b.demo && b.x > F.lane.left && b.vy >= 0 && b.y >= F.lane.seatY - b.r * 1.2 && !state.seated) {
-    state.seated = b; b.seated = true; b.vx = b.vy = 0; b.x = F.lane.x; b.y = F.lane.seatY - b.r;
-    updateHUD(); sfx.hit();
-    return;
-  }
-  if (b.y > F.drainY && b.x < F.lane.left) { settle(b, (F.exit.x0 + F.exit.x1) / 2, F.drainY - 14, F.exit); return; }
-  if (state.now - b.born > PHYS.hardLifeMs) settle(b, (F.exit.x0 + F.exit.x1) / 2, F.drainY - 14, F.exit);
-}
-
-// ---------------------------------------------------------------------------
 // Update
 // ---------------------------------------------------------------------------
 function update() {
@@ -764,8 +467,13 @@ function update() {
     state.demoAt = now + 3000 + Math.random() * 2500;
   }
   const hadBalls = state.balls.length;
-  stepPhysics(dt);
-  updateSpinners(dt);
+  // Fixed-step physics: identical steps to the planner's, so a planned ball
+  // follows its planned path. The world clock is kept within a step of the
+  // wall clock (and resynced after a hidden tab) so flashes line up.
+  state.acc = Math.min(state.acc + dt, 0.1);
+  while (state.acc >= SUBSTEP) { stepWorld(world, state.balls, hooks); state.acc -= SUBSTEP; }
+  if (world.time < now - 150 && !state.balls.some((b) => !b.dying && !b.seated)) world.time = now; // resync only with nothing in play
+  state.balls = state.balls.filter((b) => !b.dying || now - b.dying.t0 < 360);
   if (state.balls.length !== hadBalls) updateHUD();
   state.effects = state.effects.filter((fx) => now - fx.t0 < fx.dur);
 }
@@ -775,7 +483,7 @@ function update() {
 // ---------------------------------------------------------------------------
 const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
 const easeInOut = (t) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
-const flash = (comp, dur = 350) => (comp.flashT ? Math.max(0, 1 - (state.now - comp.flashT) / dur) : 0);
+const flash = (comp, dur = 350) => (comp.flashT ? Math.max(0, 1 - (world.time - comp.flashT) / dur) : 0);
 
 function render() {
   const now = state.now;
@@ -810,7 +518,7 @@ function drawDynamic(pal, now) {
     ctx.strokeStyle = withAlpha('#ffb000', f); ctx.lineWidth = 3; ctx.shadowColor = AMBER; ctx.shadowBlur = 16 * f; ctx.stroke(); ctx.shadowBlur = 0;
   }
   for (const k of F.kickouts) {
-    const f = k.ejectT ? Math.max(0, 1 - (now - k.ejectT) / 500) : 0; if (!f) continue;
+    const f = k.ejectT ? Math.max(0, 1 - (world.time - k.ejectT) / 500) : 0; if (!f) continue;
     ctx.beginPath(); ctx.arc(k.ex, k.ey, 8 + 20 * (1 - f), 0, Math.PI * 2); ctx.strokeStyle = withAlpha(pal.accent2, f); ctx.lineWidth = 2; ctx.stroke();
   }
   for (const g of F.gates) {
@@ -883,8 +591,8 @@ function drawDynamic(pal, now) {
   }
   // rubber flippers
   for (const f of F.flippers) {
-    f.angle = flipperAngle(f);
-    const seg = flipperSegment(f), active = now - f.flipT < 380;
+    f.angle = flipperAngle(world, f);
+    const seg = flipperSegment(f), active = world.time - f.flipT < 380;
     const path = () => { ctx.beginPath(); ctx.moveTo(seg.a.x, seg.a.y); ctx.lineTo(seg.b.x, seg.b.y); };
     ctx.save(); ctx.translate(2, 4); path(); ctx.strokeStyle = 'rgba(0,0,0,0.55)'; ctx.lineWidth = 15; ctx.lineCap = 'round'; ctx.stroke(); ctx.restore();
     path(); ctx.strokeStyle = shade(pal.rubber, 0.45); ctx.lineWidth = 14; ctx.lineCap = 'round'; ctx.stroke();
@@ -969,7 +677,7 @@ function drawBalls(now) {
       r = b.r * (1 - t); x = b.x + (b.dying.x - b.x) * t; y = b.y + (b.dying.y - b.y) * t;
       if (r <= 0.5) continue;
     }
-    if (b.held) { const t = Math.min(1, (now - (b.held.until - 700)) / 250); r = b.r * Math.max(0, 1 - t); if (r < 0.5) continue; }
+    if (b.held) { const t = Math.min(1, (world.time - (b.held.until - 700)) / 250); r = b.r * Math.max(0, 1 - t); if (r < 0.5) continue; }
     if (b.seated) y += pull() * 10;
     drawBallSprite(ctx, x, y, r, b.type);
     if (!b.dying && !b.held && !b.demo) {

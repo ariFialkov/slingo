@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 // Verifies (1) every risk profile's prize table has EV = TARGET_RTP with no
-// zero outcome, (2) the steering keeps components live, never lets a total pass
-// its prize, and the exit only ever lifts a total to the predetermined prize, and (3) all nine
+// zero outcome, (2) fixed hits keep components live, never let a total pass
+// its prize, and the exit only ever lifts a total to the predetermined prize,
+// (3) the engine is deterministic and the planner finds paths, and (4) all nine
 // hand-built machines pass the layout audit (inside the cabinet, no overlaps)
 // and the V-pocket trap scan at every field aspect the app can show.
 import { PROFILES, TARGET_RTP, SCORE_STEP, BALL_TYPES, LAUNCH_CREDIT, MIN_TOTAL_FRAC, FLOOR_MULT, round2 } from '../js/config.js';
-import { awardFor, pickAim, exitMultiplier, rollMultiplier, findTrap, auditSpec } from '../js/field.js';
-import { MACHINES, buildMachine, allowedTypes, buyIn } from '../js/machines.js';
+import { applyHit, hitFraction, totalAfter, exitMultiplier, rollMultiplier, findTrap, auditSpec, realize } from '../js/field.js';
+import { createWorld, simulateLaunch } from '../js/physics.js';
+import { MACHINES, buildMachine, allowedTypes, buyIn, machineProfile } from '../js/machines.js';
 
 let failed = false;
 const report = (ok, msg) => { if (!ok) failed = true; console.log(`${ok ? 'PASS' : 'FAIL'}  ${msg}`); };
@@ -25,9 +27,9 @@ for (const [key, t] of Object.entries(PROFILES)) {
   report(Math.abs(total / N - TARGET_RTP) < 0.05, `monte-carlo LUCKY 7 EV = ${(total / N).toFixed(3)} (highest variance table)`);
 }
 
-// Steering: the exit only ever lifts a total (multiplier ≥ 1), the total
-// never drops below one step, + hits stay live until the ball has reached its
-// prize (MAX), and the exit reconciles any total exactly to the prize.
+// Fixed hits: the running total never passes the prize nor drops below one
+// step, + hits stay live until the ball has reached its prize (MAX), the exit
+// only ever lifts (multiplier ≥ 1) and reconciles any total exactly.
 {
   let trials = 0, badStep = 0, zeroLate = 0, maxHits = 0, minHits = 0, lateAwards = 0, inconsistent = 0, belowFloor = 0, cuts = 0, overPrize = 0;
   const mults = [];
@@ -37,11 +39,11 @@ for (const [key, t] of Object.entries(PROFILES)) {
       for (const [mult] of prof.table) {
         for (let k = 0; k < 120; k++) {
           const target = round2(mult * type.bet);
-          const ball = { stake: type.bet, target, total: round2(LAUNCH_CREDIT * type.bet), aim: pickAim(target, type.bet) };
+          const ball = { stake: type.bet, target, total: round2(LAUNCH_CREDIT * type.bet) };
           const hits = 1 + Math.floor(Math.random() * 40);
           for (let i = 0; i < hits; i++) {
-            const sign = Math.random() < 0.6 ? +1 : -1;
-            const a = awardFor(ball, sign, 1 + ((Math.random() * 3) | 0));
+            const sign = Math.random() < 0.6 ? +1 : -1, tier = 1 + ((Math.random() * 3) | 0);
+            const a = applyHit(ball, sign, hitFraction(null, tier, sign));
             if (i >= 3) {
               lateAwards++;
               if (a === 0) { if (sign > 0 && ball.total >= target - step + 1e-9) maxHits++; else if (sign < 0 && ball.total <= MIN_TOTAL_FRAC * type.bet + step + 1e-9) minHits++; else zeroLate++; }
@@ -53,10 +55,7 @@ for (const [key, t] of Object.entries(PROFILES)) {
           }
           const M = exitMultiplier(ball);
           if (M < 1 - 1e-9) cuts++;
-          if (Math.abs(ball.total * M - target) > 0.005) {
-            inconsistent++;
-            if (inconsistent < 4) console.log(`      ${key} ${type.key} ×${mult}: ${ball.total} × ${M} ≠ ${target}`);
-          }
+          if (Math.abs(ball.total * M - target) > 0.005) inconsistent++;
           mults.push(M);
           trials++;
         }
@@ -65,12 +64,35 @@ for (const [key, t] of Object.entries(PROFILES)) {
   }
   mults.sort((a, b) => a - b);
   const pct = (p) => mults[Math.floor(mults.length * p)].toFixed(2);
-  report(badStep === 0, `all awards are SCORE_STEP multiples (${badStep} violations)`);
+  report(badStep === 0, `all hits are SCORE_STEP multiples (${badStep} violations)`);
   report(zeroLate === 0, `components stay live all ball: ${lateAwards - zeroLate - maxHits - minHits} of ${lateAwards} established-ball hits scored, ${maxHits} read MAX at the prize, ${minHits} − hits at the floor, ${zeroLate} went silent`);
   report(overPrize === 0 && belowFloor === 0, `running total never passes the prize (${overPrize}) nor drops below one step (${belowFloor})`);
   report(cuts === 0, `the exit never cuts: ${trials} balls, ${cuts} exit multipliers below ×1`);
   report(inconsistent === 0, `${trials} balls reconcile exactly at the exit (${inconsistent} bad)`);
-  report(true, `exit multipliers: p10 ×${pct(0.1)}  median ×${pct(0.5)}  p90 ×${pct(0.9)}`);
+  report(true, `unplanned exit multipliers: p10 ×${pct(0.1)}  median ×${pct(0.5)}  p90 ×${pct(0.9)}`);
+}
+
+// The engine is deterministic and the planner finds paths: simulate a spread
+// of launches per machine, check identical replays, and see how close the
+// best candidate lands for typical prizes.
+{
+  const t0 = Date.now();
+  let sims = 0, replayBad = 0;
+  const rows = [];
+  for (const m of MACHINES) {
+    const spec = buildMachine(m);
+    const board = realize(spec, 12, 70, 366, 629);
+    const world = createWorld(board, machineProfile(m));
+    const cands = [];
+    for (let i = 0; i < 40; i++) { cands.push(simulateLaunch(world, 0.26 + (0.74 * i) / 39, 1000 + i * 97, hitFraction)); sims++; }
+    const again = simulateLaunch(world, cands[7].p, cands[7].seed, hitFraction);
+    if (JSON.stringify(again.hits) !== JSON.stringify(cands[7].hits)) replayBad++;
+    const stake = 10;
+    const best = (target) => Math.min(...cands.map((c) => target / totalAfter(stake, target, c.hits)));
+    rows.push(`${m.id.padEnd(10)} settled ${cands.filter((c) => c.settled).length}/40  best exit bonus for ×0.5 ${best(5).toFixed(2)}  ×1 ${best(10).toFixed(2)}  ×2 ${best(20).toFixed(2)}  ×5 ${best(50).toFixed(2)}`);
+  }
+  report(replayBad === 0, `engine is deterministic: ${sims} launches simulated, ${replayBad} replays differed (${((Date.now() - t0) / sims).toFixed(1)} ms each)`);
+  for (const r of rows) console.log('        ' + r);
 }
 
 // Machines: audit + trap scan at the aspects the layout can produce (1.5–1.72).

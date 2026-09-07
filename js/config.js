@@ -2,10 +2,10 @@
 //
 // Every ball is an isolated bet. At launch a multiplier is drawn from the
 // machine's risk profile (Σ m·p = TARGET_RTP for every profile), fixing the
-// ball's prize. The pinball physics that follows is purely visual: signed
-// components steer the running total toward an aim below the prize, and
-// whichever exit swallows the ball reveals the bonus multiplier that lifts
-// that total to the fixed prize — deterministic wherever the ball lands, and
+// ball's prize. Component values are fixed; the launch planner simulates the
+// deterministic physics at many launch powers and picks the path, nearest
+// the player's pull, whose fixed hits add up to that prize. The exit then
+// reveals the bonus multiplier that lifts the running total to the prize —
 // never a cut: the total can't pass the prize and no prize is zero.
 
 export const TARGET_RTP = 0.96;
@@ -31,10 +31,17 @@ export const FLOOR_MULT = 0.2;
 export const LAUNCH_CREDIT = 0.1;
 // The running total can never be knocked below this (one step).
 export const MIN_TOTAL_FRAC = 0.05;
-// The exit is a bonus, never a cut: the steering aims the running total at
-// prize ÷ m for one of these m, and the exit reveals the multiplier that
-// closes the gap. A total can never pass its prize, so m ≥ 1 always.
-export const EXIT_MULTS = [[1.25, 10], [1.5, 22], [2, 26], [3, 20], [5, 12], [10, 5], [25, 2]];
+// Component values are fixed, as fractions of the bet, by tier: + / ++ / +++
+// and the drop-target bank's clear bonus. A + hit can never take the running
+// total past the ball's prize (it reads MAX instead) and a − hit can never
+// take it below MIN_TOTAL_FRAC.
+export const HIT_VALUES = { pos: { 1: 0.1, 2: 0.2, 3: 0.5, 4: 0.5 }, neg: { 1: 0.05, 2: 0.1, 3: 0.2 } };
+// The exit is a bonus, never a cut: it reveals the multiplier that lifts the
+// running total to the prize. The launch planner prefers paths whose total
+// lands the exit multiplier in the first of these bands, then the next…
+export const EXIT_BANDS = [1.5, 3, 8, 25];
+// …among launch powers within these distances of the player's pull.
+export const POWER_WINDOWS = [0.06, 0.12, 0.25, 1];
 
 // Risk profiles: prize tables of identical EV (0.96) but very different
 // variance, plus physics and flipper charges. Each table lists the winning
