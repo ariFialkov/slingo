@@ -87,8 +87,10 @@ export function pickAim(target, stake) {
 }
 
 // The multiplier the exit reveals: total × M = the prize fixed at launch.
+// A total knocked all the way to zero is divided by one step instead, so the
+// multiplier stays finite (the reconciliation label is hidden in that case).
 export function exitMultiplier(ball) {
-  return ball.target / Math.max(MIN_TOTAL_FRAC * ball.stake, ball.total);
+  return ball.target / Math.max(SCORE_STEP * ball.stake, MIN_TOTAL_FRAC * ball.stake, ball.total);
 }
 
 export const tierLabel = (sign, tier) => (sign > 0 ? '+' : '−').repeat(tier);
@@ -216,12 +218,41 @@ export function findTrap(spec) {
 // ---------------------------------------------------------------------------
 export function generateSpec(theme = pickTheme()) {
   let spec = null;
-  for (let attempt = 0; attempt < 12; attempt++) {
+  for (let attempt = 0; attempt < 16; attempt++) {
     spec = generateOnce(theme);
     if (!findTrap(spec)) { spec.attempts = attempt + 1; return spec; }
   }
-  spec.attempts = 12;
+  // Last resort, so a board is never shipped with a dead end: lift the nearest
+  // removable component out of the pocket until the scan comes back clean.
+  spec.attempts = 16;
+  spec.repaired = 0;
+  for (let fix = 0; fix < 8; fix++) {
+    const t = findTrap(spec);
+    if (!t) break;
+    if (!removeNearest(spec, t)) break;
+    spec.repaired++;
+  }
   return spec;
+}
+
+// Removal preference: the most numerous and least missed components first.
+const REMOVABLE = ['pins', 'oneways', 'rails', 'movers', 'magnets', 'spinners', 'gates', 'banks', 'tris'];
+function removeNearest(spec, t) {
+  let best = null;
+  for (const key of REMOVABLE) {
+    spec[key].forEach((it, i) => {
+      if (it.lane) return;                                   // never the launch-lane flap
+      if (key === 'tris' && i < 2) return;                    // nor the slingshot pair
+      if (key === 'gates' && spec.gates.length <= 1) return;  // keep at least one gate
+      const u = it.u !== undefined ? it.u : it.a ? (it.a[0] + it.b[0]) / 2 : (it.pts[0][0] + it.pts[1][0] + it.pts[2][0]) / 3;
+      const v = it.v !== undefined ? it.v : it.a ? (it.a[1] + it.b[1]) / 2 : (it.pts[0][1] + it.pts[1][1] + it.pts[2][1]) / 3;
+      const d = Math.hypot(u - t.u, v - t.v);
+      if (!best || d < best.d) best = { d, key, i };
+    });
+  }
+  if (!best) return false;
+  spec[best.key].splice(best.i, 1);
+  return true;
 }
 
 function generateOnce(theme) {

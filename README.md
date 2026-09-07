@@ -27,10 +27,14 @@ standalone app (works offline after first load). `./build.sh` produces a clean
   the camera kicks on release proportionally to strength.
 - **Desktop**: identical, with click-and-drag.
 - A segmented charge ladder inside the launch lane lights from the plunger up,
-  with a notch marking the charge that clears the lane flap, and a `CHARGE`
-  LED readout below the cabinet. Launch speed is a pure function of pull, so
-  the same pull on the same board always enters the field the same way. Too
-  weak, and the ball drops back onto the plunger — pull again, same bet.
+  with a notch at the 25% mark, and a `CHARGE` LED readout below the cabinet.
+  Launch speed is a pure function of the charge, expressed as a multiple of the
+  speed needed to clear that board's lane flap — so **any charge of 25% or more
+  always reaches the field**, on every board and theme, and anything below it
+  always drops back into the slot.
+- **The bet is only placed when the ball reaches the field.** A charge too weak
+  to clear the flap costs nothing: the ball re-seats and can simply be launched
+  again. Launching is never a test of skill.
 - **Ball type** (bottom button) cycles the bet: Bronze $1, Silver $5, Gold $10,
   Platinum $25, Diamond $100. The ball waiting on the plunger takes that colour.
 - Launch as fast as you can pull; multiple balls play out at once, each with its
@@ -95,11 +99,13 @@ launched: a multiplier is drawn from the board's prize table, fixing the ball's
   launch (`$12.50 × 1.60`). Because the exit computes that multiplier from
   whatever total arrives, the result is exactly the predetermined one no matter
   where or when the ball lands — nothing has to be reserved for the ending.
+- **A ball is launched carrying its bet as credit**, so it has room to move in
+  both directions from the first bounce and can be knocked all the way to zero.
 - **Components therefore never go quiet.** Each ball trends toward an *aim*
   total (the one that would make its exit multiplier a satisfying number), and
   once it's near that aim, + and − components keep nudging it up and down
-  instead of running out of room. Over 99.6% of hits on an established ball
-  score, however long it stays in play.
+  instead of running out of room. Every hit on an established ball scores,
+  however long it stays in play.
 - A + component awards a share of the remaining gap (by tier); a − component
   pulls back an overshoot or takes a bite out of the band. Awards are always
   multiples of 5% of the stake, and the running total flickers white on each.

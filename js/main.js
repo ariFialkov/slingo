@@ -169,24 +169,33 @@ canvas.addEventListener('pointerup', endDrag);
 canvas.addEventListener('pointercancel', (e) => { if (state.drag && e.pointerId === state.drag.id) state.drag = null; });
 
 const pull = () => (state.drag ? state.drag.pull : 0);
-// Launch speed is a pure function of pull — deterministic.
-const launchSpeed = (p) => board.h * (PHYS.launchSpeed[0] + (PHYS.launchSpeed[1] - PHYS.launchSpeed[0]) * p);
-// Minimum pull that carries the ball over the lane flap (per theme gravity).
-function minClearPull() {
-  const v = Math.sqrt(2 * phys('gravity') * board.h * (board.lane.seatY - board.lane.flapY - board.h * 0.01)) / board.h;
-  return Math.max(0, Math.min(1, (v - PHYS.launchSpeed[0]) / (PHYS.launchSpeed[1] - PHYS.launchSpeed[0])));
+// Speed that just carries a ball from the slot to the lane flap on this board.
+function clearSpeed() {
+  const rise = board.lane.seatY - board.lane.flapY + PHYS.ballRadius * board.w;
+  return Math.sqrt(2 * phys('gravity') * board.h * rise);
 }
+// Launch speed is a pure function of the charge — deterministic. Below the
+// threshold the ball always falls back to the slot; at or above it the ball
+// always reaches the field, on every board and theme.
+function launchSpeed(p) {
+  const { threshold: th, weak, strong } = PHYS.launch;
+  const v = clearSpeed();
+  return p < th
+    ? v * (weak[0] + (weak[1] - weak[0]) * (p / th))
+    : v * (strong[0] + (strong[1] - strong[0]) * ((p - th) / (1 - th)));
+}
+const minClearPull = () => PHYS.launch.threshold;
 
 function launch(p) {
   let ball = state.seated;
   if (!ball) {
     const type = ballType();
     if (type.bet > state.balance + 1e-9) { toast(`Not enough balance for a ${type.name} ball — tap ${$topup.textContent}`); return; }
-    state.balance -= type.bet;
     const mult = rollMultiplier(theme().table); // the isolated bet is decided here
     ball = makeBall(type, mult);
     state.balls.push(ball);
-    state.launched++;
+    // The bet is not placed yet: a charge too weak to reach the field drops the
+    // ball back into the slot costing nothing, so launching is never a skill test.
   }
   state.seated = null;
   ball.seated = false;
@@ -206,10 +215,10 @@ function makeBall(type, mult) {
   const target = round2(mult * type.bet);
   return {
     x: board.lane.x, y: board.lane.seatY - r, vx: 0, vy: 0, r,
-    type, stake: type.bet, mult, target, total: 0, aim: pickAim(target, type.bet),
+    type, stake: type.bet, mult, target, total: type.bet, aim: pickAim(target, type.bet),
     born: state.now, cd: new Map(), slowSince: 0, dying: null, hits: 0, flips: theme().flips,
     lastComp: null, repeat: 0, ax: 0, ay: 0, at: state.now, popT: -1e9,
-    sides: new Map(), gcd: new Map(), seated: false, held: null,
+    sides: new Map(), gcd: new Map(), seated: false, held: null, charged: false,
   };
 }
 
@@ -252,6 +261,11 @@ function award(ball, comp, sign, tier, x, y) {
 }
 
 function settle(ball, x, y, where) {
+  if (!ball.charged) { // never reached the field: no bet was placed, no prize
+    ball.dying = { t0: state.now, x, y };
+    updateHUD();
+    return;
+  }
   // The exit is a mystery multiplier: total × M is exactly the prize fixed at
   // launch, so wherever the ball lands the result is the predetermined one.
   const M = exitMultiplier(ball);
@@ -545,6 +559,13 @@ function updateSpinners(dt) {
 
 function checkSensors(b) {
   const F = board;
+  // The bet is placed the moment the ball clears the lane flap into the field.
+  if (!b.charged && b.y < F.lane.flapY) {
+    b.charged = true;
+    state.balance -= b.stake;
+    state.launched++;
+    updateHUD();
+  }
   if (b.held) {
     if (state.now >= b.held.until) {
       const k = b.held.kick;
@@ -585,9 +606,12 @@ function checkSensors(b) {
       state.effects.push({ type: 'puff', x: b.x, y: b.y, t0: state.now, dur: 300 });
     }
   }
-  // a weak plunge falls back onto the plunger and re-seats
-  if (b.x > F.lane.left && b.vy >= 0 && b.y >= F.lane.seatY - b.r * 1.2 && Math.hypot(b.vx, b.vy) < 0.8 * F.h) {
-    if (!state.seated) { state.seated = b; b.seated = true; b.vx = b.vy = 0; b.x = F.lane.x; b.y = F.lane.seatY - b.r; updateHUD(); sfx.hit(); return; }
+  // A charge too weak to clear the flap drops the ball back into the slot,
+  // where it re-seats un-bet and can simply be launched again.
+  if (!b.charged && b.x > F.lane.left && b.vy >= 0 && b.y >= F.lane.seatY - b.r * 1.2 && !state.seated) {
+    state.seated = b; b.seated = true; b.vx = b.vy = 0; b.x = F.lane.x; b.y = F.lane.seatY - b.r;
+    updateHUD(); sfx.hit();
+    return;
   }
   if (b.y > F.drainY && b.x < F.lane.left) { settle(b, (F.exit.x0 + F.exit.x1) / 2, F.drainY - 14, F.exit); return; }
   if (state.now - b.born > PHYS.hardLifeMs) settle(b, (F.exit.x0 + F.exit.x1) / 2, F.drainY - 14, F.exit);

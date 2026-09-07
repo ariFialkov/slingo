@@ -32,7 +32,9 @@ export const SCORE_STEP = 0.05;
 // These are the multipliers the steering aims for; the exit computes the exact
 // one, so an early or late exit is still exactly right.
 export const EXIT_MULTS = [[0.5, 12], [0.75, 16], [1, 24], [1.5, 20], [2, 14], [3, 8], [5, 4], [10, 2]];
-export const MIN_TOTAL_FRAC = 0.15; // running-total floor, × stake
+// A ball is launched carrying its bet as credit, and can be knocked all the
+// way down to zero by − components.
+export const MIN_TOTAL_FRAC = 0;
 
 // Board themes. Each pairs a colour palette with a risk profile: a prize
 // table of identical EV (0.96) but very different variance, plus physics and
@@ -86,9 +88,14 @@ export const PHYS = {
   bumperKick: 0.8,     // × fieldHeight / s
   flipperKick: 1.15,   // × fieldHeight / s
   drag: 0.08,          // per second
-  maxSpeed: 2.6,       // × fieldHeight / s
+  maxSpeed: 3.0,       // × fieldHeight / s
   ballRadius: 0.017,   // × fieldWidth
-  launchSpeed: [0.85, 1.95], // × fieldHeight / s at min/max plunger pull (deterministic)
+  // Plunger charge → launch speed, as a multiple of the speed needed to clear
+  // this board's lane flap. Expressing it that way makes the threshold hold on
+  // every board and theme regardless of gravity: below `threshold` the ball
+  // always falls back to the slot, at or above it the ball always reaches the
+  // field. Deterministic — speed is a pure function of the charge.
+  launch: { threshold: 0.25, weak: [0.5, 0.9], strong: [1.12, 2.27] },
   softLifeMs: 12000,   // after this, scoring stops and gravity ramps up to drain the ball
   hardLifeMs: 22000,   // after this, the ball is force-settled
 };

@@ -4,7 +4,7 @@
 // of +/− component hits of any tier, with every award a SCORE_STEP multiple,
 // and (3) procedural boards generate with their components in play and pass
 // the V-pocket trap scan.
-import { THEMES, TARGET_RTP, SCORE_STEP, MIN_TOTAL_FRAC, BALL_TYPES, round2 } from '../js/config.js';
+import { THEMES, TARGET_RTP, SCORE_STEP, BALL_TYPES, round2 } from '../js/config.js';
 import { awardFor, pickAim, exitMultiplier, rollMultiplier, generateSpec, pointInPoly, findTrap } from '../js/field.js';
 
 let failed = false;
@@ -35,7 +35,7 @@ for (const t of Object.values(THEMES)) {
       for (const [mult] of [[0], ...theme.table]) {
         for (let k = 0; k < 120; k++) {
           const target = round2(mult * type.bet);
-          const ball = { stake: type.bet, target, total: 0, aim: pickAim(target, type.bet) };
+          const ball = { stake: type.bet, target, total: type.bet, aim: pickAim(target, type.bet) };
           const hits = 1 + Math.floor(Math.random() * 40); // include very long-lived balls
           for (let i = 0; i < hits; i++) {
             const a = awardFor(ball, Math.random() < 0.6 ? +1 : -1, 1 + ((Math.random() * 3) | 0));
@@ -44,7 +44,7 @@ for (const t of Object.values(THEMES)) {
             ball.total = round2(ball.total + a);
           }
           const M = exitMultiplier(ball);
-          if (ball.total < MIN_TOTAL_FRAC * type.bet) belowFloor++;
+          if (ball.total < SCORE_STEP * type.bet) belowFloor++;
           else if (Math.abs(ball.total * M - target) > 0.005) {
             inconsistent++;
             if (inconsistent < 4) console.log(`      ${theme.key} ${type.key} ×${mult}: ${ball.total} × ${M} ≠ ${target}`);
