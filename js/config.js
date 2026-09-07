@@ -13,7 +13,7 @@ export const START_BALANCE = 1000;
 export const TOPUP_AMOUNT = 500;
 
 // Balls launched per board before a new board is generated.
-export const BOARD_BALLS = 5;
+export const BOARD_BALLS = 3;
 
 export const BALL_TYPES = [
   { key: 'bronze', name: 'BRONZE', bet: 1, color: '#c98f2d', hi: '#ffe9a8' },

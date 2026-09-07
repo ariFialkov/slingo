@@ -4,8 +4,8 @@ Plunger pinball on procedurally generated boards, playable on mobile and
 desktop as an installable PWA. Pull the spring plunger, release, and the ball
 shoots up the launch lane, around the top curve and into the field, where it
 bounces, rolls and drops through bumpers, kickers, magnets, gates and spinners
-until an exit swallows it — racking up its prize along the way. Every five balls
-the board regenerates with a new layout and a new risk theme.
+until an exit swallows it — racking up its prize along the way. Every three
+balls the board regenerates with a new layout and a new risk theme.
 
 ## Play it
 
