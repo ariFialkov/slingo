@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>Slingo</title>
+  <meta name="description" content="Slingo — plunger pinball on nine vintage machines. Every ball is a bet." />
+  <meta name="theme-color" content="#07080c" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" href="icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <div id="hud">
+    <div class="hud-left">
+      <span id="logo">SLINGO</span>
+      <span id="lastwin"></span>
+    </div>
+    <div class="hud-right">
+      <span id="inplay"></span>
+      <span id="balance" class="pill gold">$0</span>
+      <button id="topup" class="pill btn" type="button">+$250</button>
+      <button id="mute" class="pill btn icon" type="button">🔊</button>
+    </div>
+  </div>
+
+  <div id="betbar">
+    <button id="machines" class="pill btn" type="button" title="Machines (when the field is empty)" aria-label="Machines">☰</button>
+    <span id="machine" class="pill"></span>
+    <button id="balltype" class="pill btn" type="button" title="Change ball (bet)">
+      <span id="balldot"></span>
+      <span id="ballname">BRONZE · $1.00</span>
+      <span class="chev">▸</span>
+    </button>
+  </div>
+
+  <!-- Lobby: an overlay on the live machine. Tap anywhere to play. -->
+  <div id="lobby">
+    <div class="lobby-top">
+      <button id="prev" class="arrow" type="button" aria-label="Previous machine">‹</button>
+      <div class="lobby-title">
+        <div id="lobbyIndex" class="lobby-index">1 / 9</div>
+        <h1 id="lobbyName">MACHINE</h1>
+        <div id="lobbySub" class="lobby-sub"></div>
+        <div class="lobby-meta">
+          <span id="lobbyStars" class="tag stars"></span>
+          <span id="lobbyProfile" class="tag"></span>
+          <span id="lobbyStakes" class="tag"></span>
+          <span id="lobbyBuyin" class="tag"></span>
+        </div>
+      </div>
+      <button id="next" class="arrow" type="button" aria-label="Next machine">›</button>
+    </div>
+    <div class="lobby-bottom">
+      <div id="lobbySig" class="lobby-sig"></div>
+      <div id="lobbyCta" class="lobby-cta">TAP ANYWHERE TO PLAY</div>
+      <button id="lobbyMachines" class="pill btn" type="button">☰ ALL MACHINES</button>
+    </div>
+  </div>
+
+  <!-- Horizontal machine strip -->
+  <div id="strip" hidden>
+    <div class="strip-backdrop"></div>
+    <div class="strip-sheet">
+      <div class="strip-head"><span>MACHINES</span><button id="stripClose" class="pill btn icon" type="button" aria-label="Close">✕</button></div>
+      <div id="stripRow" class="strip-row"></div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+  <script type="module" src="js/main.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => navigator.serviceWorker.register('sw.js'));
+    }
+  </script>
+</body>
+</html>
