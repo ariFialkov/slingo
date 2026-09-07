@@ -3,9 +3,10 @@
 // Every ball is an isolated bet. At launch a multiplier is drawn from the
 // machine's risk profile (Σ m·p = TARGET_RTP for every profile), fixing the
 // ball's prize. The pinball physics that follows is purely visual: signed
-// components steer the running total toward an aim, and whichever exit
-// swallows the ball reveals the mystery multiplier that turns that total into
-// the fixed prize — so the outcome is deterministic wherever the ball lands.
+// components steer the running total toward an aim below the prize, and
+// whichever exit swallows the ball reveals the bonus multiplier that lifts
+// that total to the fixed prize — deterministic wherever the ball lands, and
+// never a cut: the total can't pass the prize and no prize is zero.
 
 export const TARGET_RTP = 0.96;
 
@@ -23,21 +24,40 @@ export const BALL_TYPES = [
 
 // Component awards are multiples of SCORE_STEP × stake (5% of the bet).
 export const SCORE_STEP = 0.05;
-// Exit multipliers the steering aims for; the exit computes the exact one.
-export const EXIT_MULTS = [[0.5, 12], [0.75, 16], [1, 24], [1.5, 20], [2, 14], [3, 8], [5, 4], [10, 2]];
-export const MIN_TOTAL_FRAC = 0; // a ball carries its bet as credit and can be knocked to zero
+// No ball ends at zero: every prize table's lowest outcome is the consolation
+// FLOOR_MULT × stake, and every ball is launched carrying LAUNCH_CREDIT × stake
+// (below the floor, so the first hits of every ball climb, winner or not).
+export const FLOOR_MULT = 0.2;
+export const LAUNCH_CREDIT = 0.1;
+// The running total can never be knocked below this (one step).
+export const MIN_TOTAL_FRAC = 0.05;
+// The exit is a bonus, never a cut: the steering aims the running total at
+// prize ÷ m for one of these m, and the exit reveals the multiplier that
+// closes the gap. A total can never pass its prize, so m ≥ 1 always.
+export const EXIT_MULTS = [[1.25, 10], [1.5, 22], [2, 26], [3, 20], [5, 12], [10, 5], [25, 2]];
 
 // Risk profiles: prize tables of identical EV (0.96) but very different
-// variance, plus physics and flipper charges. Verified by tools/verify-rtp.js.
+// variance, plus physics and flipper charges. Each table lists the winning
+// outcomes; withFloor() turns the missing mass into the consolation floor and
+// rescales the wins so EV stays exact.
+// Verified by tools/verify-rtp.js.
+function withFloor(wins) {
+  // Paying losers the floor adds EV; scale every winning outcome by the same
+  // factor so the table keeps its shape and lands back on TARGET_RTP exactly.
+  const pWin = wins.reduce((s, [, p]) => s + p, 0);
+  const evWin = wins.reduce((s, [m, p]) => s + m * p, 0);
+  const k = (TARGET_RTP - FLOOR_MULT) / (evWin - FLOOR_MULT * pWin);
+  return [[FLOOR_MULT, 1 - k * pWin], ...wins.map(([m, p]) => [m, k * p])];
+}
 const luckyP3 = (0.96 - (1 * 0.15 + 2 * 0.1 + 7 * 0.04 + 77 * 0.002 + 777 * 0.0002)) / 3;
 export const PROFILES = {
-  safe:     { name: 'SAFE',     tag: 'slow & steady',        table: [[0.5, 0.3], [1, 0.3], [1.5, 0.16], [2, 0.1], [3, 0.02], [5, 0.002]], physics: { gravity: 0.8 }, flips: 1 },
-  marathon: { name: 'MARATHON', tag: 'long-lasting balls',   table: [[0.5, 0.25], [1, 0.25], [1.5, 0.1], [2, 0.1], [3, 0.05], [5, 0.017]], physics: { gravity: 0.62, drag: 0.05 }, flips: 3 },
-  moderate: { name: 'MODERATE', tag: 'balanced',             table: [[0.5, 0.22], [1, 0.2], [2, 0.12], [3, 0.05], [5, 0.02], [10, 0.007], [25, 0.0036]], physics: { gravity: 0.85 }, flips: 1 },
-  bonus:    { name: 'BONUS',    tag: 'big-pop discs',        table: [[0.5, 0.2], [1, 0.18], [2, 0.1], [4, 0.06], [8, 0.02], [20, 0.004]], physics: { gravity: 0.82 }, flips: 2 },
-  volatile: { name: 'VOLATILE', tag: 'high potential',       table: [[0.5, 0.15], [1, 0.12], [2, 0.08], [5, 0.04], [10, 0.015], [25, 0.006], [50, 0.002], [100, 0.00005]], physics: { gravity: 0.9 }, flips: 1 },
-  extreme:  { name: 'EXTREME',  tag: 'rare huge wins',       table: [[1, 0.08], [3, 0.05], [10, 0.02], [25, 0.008], [100, 0.002], [500, 0.00026]], physics: { gravity: 0.95 }, flips: 1 },
-  lucky:    { name: 'LUCKY 7',  tag: 'sevens pay',           table: [[1, 0.15], [2, 0.1], [3, luckyP3], [7, 0.04], [77, 0.002], [777, 0.0002]], physics: { gravity: 0.9 }, flips: 1 },
+  safe:     { name: 'SAFE',     tag: 'slow & steady',      table: withFloor([[0.5, 0.3], [1, 0.3], [1.5, 0.16], [2, 0.1], [3, 0.02], [5, 0.002]]), physics: { gravity: 0.8 }, flips: 1 },
+  marathon: { name: 'MARATHON', tag: 'long-lasting balls', table: withFloor([[0.5, 0.25], [1, 0.25], [1.5, 0.1], [2, 0.1], [3, 0.05], [5, 0.017]]), physics: { gravity: 0.62, drag: 0.05 }, flips: 3 },
+  moderate: { name: 'MODERATE', tag: 'balanced',           table: withFloor([[0.5, 0.22], [1, 0.2], [2, 0.12], [3, 0.05], [5, 0.02], [10, 0.007], [25, 0.0036]]), physics: { gravity: 0.85 }, flips: 1 },
+  bonus:    { name: 'BONUS',    tag: 'big-pop discs',      table: withFloor([[0.5, 0.2], [1, 0.18], [2, 0.1], [4, 0.06], [8, 0.02], [20, 0.004]]), physics: { gravity: 0.82 }, flips: 2 },
+  volatile: { name: 'VOLATILE', tag: 'high potential',     table: withFloor([[0.5, 0.15], [1, 0.12], [2, 0.08], [5, 0.04], [10, 0.015], [25, 0.006], [50, 0.002], [100, 0.00005]]), physics: { gravity: 0.9 }, flips: 1 },
+  extreme:  { name: 'EXTREME',  tag: 'rare huge wins',     table: withFloor([[1, 0.08], [3, 0.05], [10, 0.02], [25, 0.008], [100, 0.002], [500, 0.00026]]), physics: { gravity: 0.95 }, flips: 1 },
+  lucky:    { name: 'LUCKY 7',  tag: 'sevens pay',         table: withFloor([[1, 0.15], [2, 0.1], [3, luckyP3], [7, 0.04], [77, 0.002], [777, 0.0002]]), physics: { gravity: 0.9 }, flips: 1 },
 };
 
 // Physics defaults (speeds/accelerations scale with the field height).

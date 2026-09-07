@@ -102,7 +102,7 @@ component takes (`+` ≈ 12–30%, `++` ≈ 30–55%, `+++` ≈ 55–95%).
 
 ## Risk profiles
 
-| Profile | Machines | Hit rate | Max | Physics |
+| Profile | Machines | ≥ ×1 | Max | Physics |
 | --- | --- | --- | --- | --- |
 | **SAFE** | Rookie Road | 88% | ×5 | gentle gravity |
 | **MARATHON** | Surf's Up | 77% | ×5 | low gravity, 3 flipper charges |
@@ -112,25 +112,34 @@ component takes (`+` ≈ 12–30%, `++` ≈ 30–55%, `+++` ≈ 55–95%).
 | **EXTREME** | Inferno Peak | 16% | ×500 | heaviest |
 | **LUCKY 7** | Vegas Royale | 30% | ×777 | heavy; ×7, ×77, ×777 pay |
 
-Every table has EV = 96% of stake; the stars only describe variance.
+Every table has EV = 96% of stake and a ×0.2 consolation floor instead of
+zero; the stars only describe variance.
 
 ## How the outcome works
 
 Every ball is an isolated bet at the ball's bet value, decided the moment it is
 launched: a multiplier is drawn from the machine's prize table, fixing the
-ball's **target prize**. The physics that follows is real but purely visual.
+ball's **prize**. The physics that follows is real but purely visual — and it
+is built so the ending never takes anything away:
 
-- **Every exit is a mystery multiplier.** When a ball is swallowed, the exit
-  reveals the multiplier that turns its running total into the prize fixed at
-  launch (`$12.50 × 1.60`). Because the exit computes that multiplier from
-  whatever total arrives, the result is exactly the predetermined one no matter
-  where or when the ball lands.
-- **A ball is launched carrying its bet as credit**, so it has room to move in
-  both directions from the first bounce and can be knocked all the way to zero.
-- **Components never go quiet.** Each ball trends toward an *aim* total, and
-  once it's near that aim, + and − components keep nudging it up and down.
+- **No ball ends at zero.** Every table's lowest outcome is a consolation of
+  ×0.2 the bet; the winning outcomes are rescaled so EV stays at 96%.
+- **Every ball starts the same.** A ball is launched carrying 10% of its bet
+  as credit, below the consolation floor, so the first hits of every ball —
+  consolation or jackpot — climb. Nothing at launch tells the two apart.
+- **The total steers toward an aim below the prize**: prize ÷ m for a bonus
+  multiplier m between ×1.25 and ×25. + components close the gap; once the
+  total is near the aim, + and − keep nudging it up and down.
+- **The total can never pass the prize.** A + hit on a ball that has reached
+  its prize reads `MAX` (its running total turns gold) and − hits still take a
+  little, so the field stays alive. The total also never drops below one step.
+- **Every exit is a bonus, never a cut.** When a ball is swallowed — outhole,
+  hole, basket — the exit reveals the multiplier that lifts its running total
+  to the prize (`$6.50 × 2`), or a small `+ $0.40` nudge, or `MAX`. The
+  reconciliation is exact wherever and whenever the ball lands.
 - Awards are always multiples of 5% of the stake. The result card shows the
-  prize (green if it is at least the bet, red otherwise) and its multiplier.
+  prize (green if it is at least the bet, red otherwise) and its bet-to-prize
+  multiplier.
 - Balls rattling on one component are kicked loose; gravity ramps at 12 s and
   a ball is force-settled at 22 s.
 
@@ -144,7 +153,7 @@ one bar (a resting ball drops them), and sealed islands like the U-turn's
 middle are exempt.
 
 ```sh
-node tools/verify-rtp.js   # 7 tables at 96% EV; 31,200 steered balls settle exactly; 9 machines audited + trap-scanned
+node tools/verify-rtp.js   # 7 tables at 96% EV with no zero; steered balls never cut at the exit; 9 machines audited + trap-scanned
 node tools/gen-icons.js    # regenerate PWA icons (dependency-free PNG encoder)
 ```
 

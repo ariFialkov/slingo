@@ -3,7 +3,7 @@
 // Machines are hand-built in js/machines.js from the layout kit; this module
 // decides outcomes (pure luck, fixed at launch), audits layouts for V-pockets
 // a ball could rest in, and maps normalised specs onto the screen.
-import { SCORE_STEP, EXIT_MULTS, MIN_TOTAL_FRAC, round2 } from './config.js';
+import { SCORE_STEP, EXIT_MULTS, MIN_TOTAL_FRAC, LAUNCH_CREDIT, round2 } from './config.js';
 
 const rand = (a, b) => a + Math.random() * (b - a);
 export const BALL_R = 0.017; // ball radius as a fraction of field width
@@ -19,31 +19,33 @@ export function rollMultiplier(table) {
     roll -= p;
     if (roll <= 0) return mult;
   }
-  return 0;
+  return table[0][0];
 }
 
 const SHARE = { 1: [0.12, 0.3], 2: [0.3, 0.55], 3: [0.55, 0.95] };
+export const bandFor = (ball) => Math.max(round2(SCORE_STEP * ball.stake) * 2, round2(ball.aim * 0.1));
 
-// The running total steers toward `ball.aim` — the total that, times the
-// multiplier the ball's exit is expected to reveal, equals its prize. Awards
-// are never zero: once the total is inside the band around the aim, components
-// keep nudging it up and down, so bumpers, gates and spinners stay alive for
-// the whole ball. Correctness does not depend on hitting the aim — the exit
-// computes the exact multiplier for whatever total the ball arrives with.
+// The running total steers toward `ball.aim` — a total at or below the prize
+// that, times the bonus multiplier the exit is expected to reveal, equals the
+// prize. + components close the gap; once inside the band around the aim, +
+// and − nudge the total up and down so the field stays alive. The total can
+// never pass the prize (+ hits at that ceiling read MAX) and never drops below
+// one step, so an exit can only ever lift the total, never cut it.
 export function awardFor(ball, sign, tier = 1) {
   const step = round2(SCORE_STEP * ball.stake);
   const nice = (x) => round2(Math.max(step, Math.round(x / step) * step));
   const [lo, hi] = SHARE[tier] || SHARE[1];
-  const aim = ball.aim, band = Math.max(step * 2, aim * 0.12);
-  const lively = () => nice(step * tier * rand(0.6, 1.6));
+  const aim = ball.aim, band = bandFor(ball);
+  const lively = () => nice(Math.min(band, step * tier * rand(0.6, 1.6)));
   if (sign > 0) {
     const gap = round2(aim - ball.total);
     if (gap > band) return Math.min(gap, nice(gap * rand(lo, hi)));
-    if (ball.total > aim * 1.6) return step; // far over: barely nudge, let − pull back
-    return lively();
+    const room = round2(ball.target - ball.total); // headroom under the prize
+    if (room < step) return 0; // MAX: the ball has reached its prize
+    return Math.min(room, lively());
   }
   const over = round2(ball.total - aim);
-  const floor = MIN_TOTAL_FRAC * ball.stake;
+  const floor = round2(MIN_TOTAL_FRAC * ball.stake);
   const stepsTo = (bound) => round2(Math.floor((ball.total - bound) / step) * step);
   const room = stepsTo(floor); // step-aligned headroom above the hard floor
   if (room <= 0) return 0;
@@ -52,25 +54,26 @@ export function awardFor(ball, sign, tier = 1) {
   // instead of walking down to the floor and leaving − components nothing.
   const inBand = stepsTo(Math.max(floor, aim - band));
   if (inBand >= step) return -Math.min(inBand, lively());
-  return -step;
+  return -Math.min(room, step);
 }
 
-// The aim: the running total the ball trends toward, so its exit multiplier
-// lands on something satisfying. Losing balls still build a total — their exit
-// simply reveals ×0. Snapped to the SCORE_STEP grid.
+// The aim: prize ÷ m for a bonus multiplier m drawn from EXIT_MULTS, clamped
+// between the launch credit and the prize and snapped to the step grid. Every
+// ball — consolation or jackpot — climbs from the same launch credit toward
+// an aim it can't see past, and the exit's multiplier is always ≥ 1.
 export function pickAim(target, stake) {
   const tot = EXIT_MULTS.reduce((s, [, w]) => s + w, 0);
   let roll = Math.random() * tot, m = 1;
   for (const [v, w] of EXIT_MULTS) { roll -= w; if (roll <= 0) { m = v; break; } }
-  const raw = target > 0 ? target / m : stake * rand(0.6, 2.5);
   const step = SCORE_STEP * stake;
-  const aim = Math.max(stake, Math.min(stake * 400, raw));
-  return round2(Math.max(step, Math.round(aim / step) * step));
+  const credit = round2(LAUNCH_CREDIT * stake);
+  const aim = Math.max(credit, Math.min(target, target / m));
+  return round2(Math.max(step, Math.min(target, Math.round(aim / step) * step)));
 }
 
 // The multiplier the exit reveals: total × M = the prize fixed at launch.
 export function exitMultiplier(ball) {
-  return ball.target / Math.max(SCORE_STEP * ball.stake, MIN_TOTAL_FRAC * ball.stake, ball.total);
+  return ball.target / Math.max(SCORE_STEP * ball.stake, ball.total);
 }
 
 export const tierLabel = (sign, tier) => (sign > 0 ? '+' : '−').repeat(tier);

@@ -1,5 +1,5 @@
 // Slingo — plunger pinball on nine hand-built machines.
-import { BALL_TYPES, START_BALANCE, TOPUP_AMOUNT, PHYS, fmtMoney, round2 } from './config.js';
+import { BALL_TYPES, START_BALANCE, TOPUP_AMOUNT, PHYS, LAUNCH_CREDIT, fmtMoney, round2 } from './config.js';
 import { realize, rollMultiplier, awardFor, pickAim, exitMultiplier, flipperSegment } from './field.js';
 import { MACHINES, buildMachine, buyIn, allowedTypes, machineProfile } from './machines.js';
 import {
@@ -330,7 +330,7 @@ function makeBall(type, mult) {
   const target = round2(mult * type.bet);
   return {
     x: board.lane.x, y: board.lane.seatY - r, vx: 0, vy: 0, r,
-    type, stake: type.bet, mult, target, total: type.bet, aim: pickAim(target, type.bet),
+    type, stake: type.bet, mult, target, total: round2(LAUNCH_CREDIT * type.bet), aim: pickAim(target, type.bet),
     born: state.now, cd: new Map(), slowSince: 0, dying: null, hits: 0, flips: profile().flips,
     lastComp: null, repeat: 0, ax: 0, ay: 0, at: state.now, popT: -1e9,
     sides: new Map(), gcd: new Map(), seated: false, held: null, charged: false,
@@ -365,7 +365,12 @@ function award(ball, comp, sign, tier, x, y) {
   }
   ball.hits++;
   const a = awardFor(ball, sign, tier);
-  if (a === 0) { sfx.miss(); return; }
+  if (a === 0) {
+    // A + hit at the ceiling: the ball has already reached its prize.
+    if (sign > 0) { ball.maxT = state.now; state.effects.push({ type: 'float', x, y, text: 'MAX', color: AMBER, t0: state.now, dur: 800, size: 12 }); sfx.led(); }
+    else sfx.miss();
+    return;
+  }
   if (state.now - ball.born > 10000) state.lateAwards++;
   ball.total = round2(ball.total + a);
   ball.popT = state.now;
@@ -389,12 +394,12 @@ function settle(ball, x, y, where) {
   ball.dying = { t0: state.now, x, y };
   state.balance += paid;
   state.settled.push({ machine: state.machine.id, target: ball.target, paid, mult: M, total: ball.total, hits: ball.hits, life: Math.round(state.now - ball.born) });
-  if (ball.hits > 0 && Math.abs(ball.total * M - paid) < 0.005) {
-    state.effects.push({
-      type: 'mystery', x, y: y + 26, t0: state.now, dur: 1500,
-      text: `${fmtMoney(ball.total)} × ${M >= 10 ? M.toFixed(0) : M.toFixed(2)}`,
-      color: paid > 0 ? AMBER : '#ff8d8d',
-    });
+  // The exit's bonus: "$6.50 × 2" for a real lift, "+$0.40" for a nudge,
+  // "MAX" when the ball had already reached its prize. Never a cut.
+  if (ball.hits > 0) {
+    const gap = round2(paid - ball.total);
+    const text = gap < 0.005 ? `${fmtMoney(ball.total)} MAX` : M >= 1.2 ? `${fmtMoney(ball.total)} × ${M >= 10 ? M.toFixed(0) : M.toFixed(2)}` : `${fmtMoney(ball.total)} + ${fmtMoney(gap)}`;
+    state.effects.push({ type: 'mystery', x, y: y + 26, t0: state.now, dur: 1500, text, color: AMBER });
   }
   ball.total = paid;
   const win = paid > 0;
@@ -968,7 +973,8 @@ function drawBalls(now) {
     if (b.seated) y += pull() * 10;
     drawBallSprite(ctx, x, y, r, b.type);
     if (!b.dying && !b.held && !b.demo) {
-      const col = b.total > 0 ? '#7dffb9' : b.total < 0 ? '#ff8d8d' : 'rgba(255,255,255,0.85)';
+      const atMax = b.total >= b.target - 1e-9;
+      const col = atMax ? AMBER : '#7dffb9';
       const pop = Math.max(0, 1 - (now - b.popT) / 260); // scoreboard flicker on each award
       dmText(ctx, fmtMoney(b.total), x, y - b.r - 12, 9 + 2.5 * pop, pop > 0.5 ? '#ffffff' : col, { align: 'center', glow: 6 + 10 * pop });
       for (let i = 0; i < b.flips; i++) { ctx.beginPath(); ctx.arc(x - (b.flips - 1) * 3 + i * 6, y + b.r + 6, 2, 0, Math.PI * 2); ctx.fillStyle = AMBER; ctx.fill(); }
