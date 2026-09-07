@@ -4,8 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>Slingo</title>
-  <meta name="description" content="Slingo — slingshot pinball. Sling balls into the field, watch them bounce to their prize." />
-  <meta name="theme-color" content="#0d1026" />
+  <meta name="description" content="Slingo — retro plunger pinball. Nine machines, nine risk profiles, every ball a bet." />
+  <meta name="theme-color" content="#15080c" />
   <link rel="manifest" href="manifest.json" />
   <link rel="icon" href="icons/icon-192.png" />
   <link rel="apple-touch-icon" href="icons/icon-192.png" />
@@ -23,19 +23,19 @@
     </div>
     <div class="hud-right">
       <span id="inplay"></span>
-      <span id="balance" class="pill">$0</span>
-      <button id="topup" class="pill btn" type="button">+$500</button>
-      <button id="mute" class="pill btn" type="button">🔊</button>
+      <span id="balance" class="dmd">$0</span>
+      <button id="topup" class="btn" type="button">+$250</button>
+      <button id="mute" class="btn" type="button">🔊</button>
     </div>
   </div>
   <div id="betbar">
-    <span id="boardinfo" class="pill">BOARD</span>
-    <button id="balltype" class="pill btn" type="button" title="Change ball (bet)">
+    <button id="machines" class="btn" type="button" title="Back to the machine floor (when the field is empty)">◂ MACHINES</button>
+    <span id="machine" class="dmd">MACHINE</span>
+    <button id="balltype" class="btn" type="button" title="Change ball (bet)">
       <span id="balldot"></span>
       <span id="ballname">BRONZE · $1.00</span>
       <span class="chev">▸</span>
     </button>
-    <button id="newboard" class="pill btn" type="button" title="New board (when the field is empty)">⟳</button>
   </div>
   <div id="toast"></div>
   <script type="module" src="js/main.js"></script>

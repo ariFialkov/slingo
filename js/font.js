@@ -63,6 +63,31 @@ const G = {
   Z: [0x61, 0x51, 0x49, 0x45, 0x43],
 };
 
+// Screen-printed playfield lettering: a heavy poster face with a dark keyline,
+// optionally filled with a chrome gradient (the classic 80s backglass look).
+export const PRINT = '"Impact", "Haettenschweiler", "Arial Narrow Bold", "Franklin Gothic Demi Cond", "Arial Black", "Helvetica Neue", Arial, sans-serif';
+export function printText(c, str, x, y, size, { fill = '#fff', chrome = null, stroke = 'rgba(0,0,0,0.85)', strokeW = 0, align = 'center', angle = 0, alpha = 1, glow = 0, spacing = '' } = {}) {
+  c.save();
+  c.translate(x, y); if (angle) c.rotate(angle);
+  c.globalAlpha = alpha;
+  c.font = `900 ${size}px ${PRINT}`;
+  c.textAlign = align; c.textBaseline = 'middle';
+  if (spacing && 'letterSpacing' in c) c.letterSpacing = spacing;
+  const sw = strokeW || Math.max(1.2, size * 0.14);
+  c.lineJoin = 'round'; c.lineWidth = sw * 2 + 2; c.strokeStyle = 'rgba(0,0,0,0.45)';
+  c.strokeText(str, 1.5, 2.5); // drop shadow keyline
+  c.lineWidth = sw * 2; c.strokeStyle = stroke; c.strokeText(str, 0, 0);
+  if (chrome) {
+    const g = c.createLinearGradient(0, -size * 0.55, 0, size * 0.55);
+    g.addColorStop(0, '#ffffff'); g.addColorStop(0.42, chrome[0]); g.addColorStop(0.5, '#ffffff'); g.addColorStop(0.55, chrome[1]); g.addColorStop(1, '#ffffff');
+    c.fillStyle = g;
+  } else c.fillStyle = fill;
+  if (glow) { c.shadowColor = chrome ? chrome[0] : fill; c.shadowBlur = glow; }
+  c.fillText(str, 0, 0);
+  c.restore();
+}
+export function printWidth(c, str, size) { c.font = `900 ${size}px ${PRINT}`; return c.measureText(str).width; }
+
 const COLS = 5, ROWS = 7, ADVANCE = 6;
 const glyph = (ch) => G[ch] || G[ch.toUpperCase()] || G['?'];
 
