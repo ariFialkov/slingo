@@ -7,7 +7,7 @@
 // rejects any layout with a V-shaped pocket a ball could rest in.
 // Geometry is normalised 0..1 (y down) and realised to pixels; angled
 // components are realised with true angles in pixel space.
-import { THEMES, THEME_WEIGHTS, SCORE_STEP, round2 } from './config.js';
+import { THEMES, THEME_WEIGHTS, SCORE_STEP, EXIT_MULTS, MIN_TOTAL_FRAC, round2 } from './config.js';
 
 const rand = (a, b) => a + Math.random() * (b - a);
 const coin = (p = 0.5) => Math.random() < p;
@@ -39,27 +39,56 @@ export function rollMultiplier(table) {
 
 const SHARE = { 1: [0.12, 0.3], 2: [0.3, 0.55], 3: [0.55, 0.95] };
 
+// The running total steers toward `ball.aim` — the total that, times the
+// multiplier the ball's exit is expected to reveal, equals its prize. Awards
+// are never zero: once the total is inside the band around the aim, components
+// keep nudging it up and down, so bumpers, gates and spinners stay alive for
+// the whole ball. Correctness does not depend on hitting the aim — the exit
+// computes the exact multiplier for whatever total the ball arrives with.
 export function awardFor(ball, sign, tier = 1) {
   const step = round2(SCORE_STEP * ball.stake);
-  const nice = (x) => round2(Math.round(x / step) * step);
+  const nice = (x) => round2(Math.max(step, Math.round(x / step) * step));
   const [lo, hi] = SHARE[tier] || SHARE[1];
-  const gap = round2(ball.target - ball.total);
+  const aim = ball.aim, band = Math.max(step * 2, aim * 0.12);
+  const lively = () => nice(step * tier * rand(0.6, 1.6));
   if (sign > 0) {
-    if (gap >= step) return Math.min(gap, Math.max(step, nice(gap * rand(lo, hi))));
-    if ((ball.overshoots || 0) >= 3) return 0;
-    ball.overshoots = (ball.overshoots || 0) + 1;
-    return round2(step * tier);
+    const gap = round2(aim - ball.total);
+    if (gap > band) return Math.min(gap, nice(gap * rand(lo, hi)));
+    if (ball.total > aim * 1.6) return step; // far over: barely nudge, let − pull back
+    return lively();
   }
-  const over = round2(ball.total - ball.target);
-  if (over >= step) return -Math.min(over, Math.max(step, nice(over * rand(Math.min(0.9, lo + 0.25), 1))));
-  const nib = round2(step * tier);
-  if (ball.total >= nib) return -nib;
-  if (ball.total >= step) return -step;
-  return 0;
+  const over = round2(ball.total - aim);
+  const floor = MIN_TOTAL_FRAC * ball.stake;
+  const stepsTo = (bound) => round2(Math.floor((ball.total - bound) / step) * step);
+  const room = stepsTo(floor); // step-aligned headroom above the hard floor
+  if (room <= 0) return 0;
+  if (over > band) return -Math.min(room, over, nice(over * rand(Math.min(0.9, lo + 0.25), 1)));
+  // Inside the band, take from the band's own depth so the total wobbles
+  // instead of walking down to the floor and leaving − components nothing.
+  const inBand = stepsTo(Math.max(floor, aim - band));
+  if (inBand >= step) return -Math.min(inBand, lively());
+  return -step;
 }
 
-export function residualFor(ball) {
-  return round2(ball.target - ball.total);
+// The aim: the running total the ball trends toward, so its exit multiplier
+// lands on something satisfying. Losing balls still build a total — their exit
+// simply reveals ×0.
+// Snapped to the SCORE_STEP grid so every gap the steering closes is itself a
+// whole number of steps, and kept well clear of the total's floor so negative
+// components always have something to take.
+export function pickAim(target, stake) {
+  const tot = EXIT_MULTS.reduce((s, [, w]) => s + w, 0);
+  let roll = Math.random() * tot, m = 1;
+  for (const [v, w] of EXIT_MULTS) { roll -= w; if (roll <= 0) { m = v; break; } }
+  const raw = target > 0 ? target / m : stake * rand(0.6, 2.5);
+  const step = SCORE_STEP * stake;
+  const aim = Math.max(stake, Math.min(stake * 400, raw));
+  return round2(Math.max(step, Math.round(aim / step) * step));
+}
+
+// The multiplier the exit reveals: total × M = the prize fixed at launch.
+export function exitMultiplier(ball) {
+  return ball.target / Math.max(MIN_TOTAL_FRAC * ball.stake, ball.total);
 }
 
 export const tierLabel = (sign, tier) => (sign > 0 ? '+' : '−').repeat(tier);

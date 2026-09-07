@@ -26,6 +26,14 @@ export const BALL_TYPES = [
 // Component awards are multiples of SCORE_STEP × stake (5% of the bet).
 export const SCORE_STEP = 0.05;
 
+// Every exit is a MYSTERY MULTIPLIER: it converts the ball's running total
+// into the prize that was fixed at launch, so the outcome is deterministic
+// wherever the ball lands and components can keep scoring the whole time.
+// These are the multipliers the steering aims for; the exit computes the exact
+// one, so an early or late exit is still exactly right.
+export const EXIT_MULTS = [[0.5, 12], [0.75, 16], [1, 24], [1.5, 20], [2, 14], [3, 8], [5, 4], [10, 2]];
+export const MIN_TOTAL_FRAC = 0.15; // running-total floor, × stake
+
 // Board themes. Each pairs a colour palette with a risk profile: a prize
 // table of identical EV (0.96) but very different variance, plus physics and
 // component-mix tweaks. Tables are verified by tools/verify-rtp.js.

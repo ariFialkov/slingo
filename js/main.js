@@ -3,9 +3,10 @@ import {
   BALL_TYPES, START_BALANCE, TOPUP_AMOUNT, BOARD_BALLS, PHYS, fmtMoney, round2,
 } from './config.js';
 import {
-  generateSpec, realize, pickTheme, rollMultiplier, awardFor, residualFor,
-  tierLabel, flipperSegment,
+  generateSpec, realize, pickTheme, rollMultiplier, awardFor, pickAim,
+  exitMultiplier, tierLabel, flipperSegment,
 } from './field.js';
+import { dmText, dmWidth } from './font.js';
 import { initAudio, sfx, toggleMute } from './audio.js';
 
 // ---------------------------------------------------------------------------
@@ -75,6 +76,7 @@ const state = {
   last: performance.now(),
   settled: [],
   boards: 0,
+  lateAwards: 0, // component awards made after 10 s of ball life (liveliness check)
 };
 window.__slingo = state;
 
@@ -201,11 +203,12 @@ function launch(p) {
 
 function makeBall(type, mult) {
   const r = PHYS.ballRadius * board.w;
+  const target = round2(mult * type.bet);
   return {
     x: board.lane.x, y: board.lane.seatY - r, vx: 0, vy: 0, r,
-    type, stake: type.bet, mult, target: round2(mult * type.bet), total: 0,
+    type, stake: type.bet, mult, target, total: 0, aim: pickAim(target, type.bet),
     born: state.now, cd: new Map(), slowSince: 0, dying: null, hits: 0, flips: theme().flips,
-    lastComp: null, repeat: 0, overshoots: 0, ax: 0, ay: 0, at: state.now,
+    lastComp: null, repeat: 0, ax: 0, ay: 0, at: state.now, popT: -1e9,
     sides: new Map(), gcd: new Map(), seated: false, held: null,
   };
 }
@@ -224,18 +227,23 @@ function award(ball, comp, sign, tier, x, y) {
   if (state.now < until) return;
   ball.cd.set(comp, state.now + 160);
   comp.flashT = state.now;
+  // Only a ball rattling on one component is silenced (and kicked loose);
+  // scoring never stops with age, so the field stays alive for the whole ball.
   if (!comp.posts) {
     if (comp === ball.lastComp) ball.repeat++; else { ball.lastComp = comp; ball.repeat = 0; }
   }
-  if (ball.repeat >= 3 || state.now - ball.born > PHYS.softLifeMs) {
+  if (ball.repeat >= 4) {
     ball.vx += (Math.random() - 0.5) * 0.6 * board.h;
     ball.vy -= 0.25 * board.h;
+    ball.repeat = 0;
     return;
   }
   ball.hits++;
   const a = awardFor(ball, sign, tier);
   if (a === 0) { sfx.miss(); return; }
+  if (state.now - ball.born > 10000) state.lateAwards++;
   ball.total = round2(ball.total + a);
+  ball.popT = state.now;
   (a > 0 ? sfx.fill : sfx.lose)();
   state.effects.push({
     type: 'float', x, y, text: (a > 0 ? '+' : '−') + fmtMoney(Math.abs(a)).slice(1),
@@ -244,12 +252,25 @@ function award(ball, comp, sign, tier, x, y) {
 }
 
 function settle(ball, x, y, where) {
-  ball.total = ball.target;
+  // The exit is a mystery multiplier: total × M is exactly the prize fixed at
+  // launch, so wherever the ball lands the result is the predetermined one.
+  const M = exitMultiplier(ball);
+  const paid = ball.target;
   ball.dying = { t0: state.now, x, y };
-  state.balance += ball.target;
-  state.settled.push({ target: ball.target, paid: ball.target, hits: ball.hits, life: Math.round(state.now - ball.born) });
-  const win = ball.target > 0;
-  if (win) state.lastWin = ball.target;
+  state.balance += paid;
+  state.settled.push({ target: ball.target, paid, mult: M, total: ball.total, hits: ball.hits, life: Math.round(state.now - ball.born) });
+  // Only show the reconciliation when it multiplies out exactly (it does
+  // unless the ball barely touched anything on its way to the exit).
+  if (ball.hits > 0 && Math.abs(ball.total * M - paid) < 0.005) {
+    state.effects.push({
+      type: 'mystery', x, y: y + 26, t0: state.now, dur: 1500,
+      text: `${fmtMoney(ball.total)} × ${M >= 10 ? M.toFixed(0) : M.toFixed(2)}`,
+      color: paid > 0 ? '#ffd65a' : '#ff8d8d',
+    });
+  }
+  ball.total = paid;
+  const win = paid > 0;
+  if (win) state.lastWin = paid;
   if (where) where.flashT = state.now;
   const big = ball.mult >= 10;
   schedule(150, () => (win ? (big ? sfx.bigwin() : sfx.win()) : sfx.lose()));
@@ -605,8 +626,9 @@ const SIGN_DARK = (s) => (s > 0 ? '#12532c' : '#5a1520');
 const GATE_COL = { boost: '#7dffb9', brake: '#7fd8ff', warp: '#ff5ed2' };
 
 function rr(c, x, y, w, h, r) { c.beginPath(); if (c.roundRect) c.roundRect(x, y, w, h, r); else c.rect(x, y, w, h); }
+const MONO = 'ui-monospace, "SF Mono", "Segoe UI Mono", "Roboto Mono", Menlo, Consolas, monospace';
 function text(c, str, x, y, size, color, { bold = true, align = 'center', glow = 0, spacing = '', emboss = false } = {}) {
-  c.font = `${bold ? '700' : '500'} ${size}px system-ui, -apple-system, sans-serif`;
+  c.font = `${bold ? '700' : '500'} ${size}px ${MONO}`;
   c.textAlign = align; c.textBaseline = 'middle';
   if (spacing && 'letterSpacing' in c) c.letterSpacing = spacing;
   if (emboss) { c.fillStyle = 'rgba(0,0,0,0.7)'; c.fillText(str, x + 1, y + 1.5); }
@@ -744,10 +766,9 @@ function buildStatic() {
   // labels
   for (const l of F.labels) {
     if (l.main) {
-      const size = Math.max(9, l.px * 0.55);
-      c.font = `700 ${size}px system-ui, -apple-system, sans-serif`;
-      const tw = c.measureText(l.text).width + 4, total = tw + 16 + 30 + 36, x0 = l.x - total / 2;
-      text(c, l.text, x0 + tw / 2, l.y, size, T.primary, { glow: 10, spacing: '2px', emboss: true });
+      const size = Math.max(8, l.px * 0.42);
+      const tw = dmWidth(l.text, size) + 4, total = tw + 16 + 30 + 36, x0 = l.x - total / 2;
+      dmText(c, l.text, x0 + 2, l.y, size, T.primary, { align: 'left', glow: 10 });
       const px = x0 + tw + 16 + 30, py = l.y;
       text(c, 'RISK', px - 18, py, 8, 'rgba(255,255,255,0.55)');
       for (let i = 0; i < 4; i++) { rr(c, px + i * 9, py - 3, 6, 6, 1.5); c.fillStyle = i < T.risk ? T.primary : 'rgba(255,255,255,0.15)'; c.fill(); }
@@ -1017,15 +1038,34 @@ function drawDynamic(T, now) {
     neon(ctx, () => { ctx.beginPath(); ctx.moveTo(seg.a.x, seg.a.y); ctx.lineTo(seg.b.x, seg.b.y); }, active ? '#ffffff' : T.primary, 3, active ? 18 : 8);
     post(ctx, seg.a.x, seg.a.y, 5, '#dfe7ff', 0);
   }
-  // launch power gauge along the lane's inner edge
-  if (state.drag) {
-    const p = pull(), g0 = F.lane.seatY - 24, g1 = F.lane.top + 24, gx = F.lane.left + 6;
-    rr(ctx, gx - 3, g1, 6, g0 - g1, 3); ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fill();
-    const y = g0 - (g0 - g1) * p;
-    rr(ctx, gx - 3, y, 6, g0 - y, 3); ctx.fillStyle = p >= 0.98 ? '#ff6a6a' : '#ffd65a'; ctx.shadowColor = ctx.fillStyle; ctx.shadowBlur = 10; ctx.fill(); ctx.shadowBlur = 0;
-    const ym = g0 - (g0 - g1) * minClearPull();
-    ctx.beginPath(); ctx.moveTo(gx - 8, ym); ctx.lineTo(gx + 8, ym); ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.lineWidth = 1.5; ctx.stroke();
-    text(ctx, `${Math.round(p * 100)}%`, gx, g1 - 12, 10, '#ffd65a', { emboss: true });
+  // Launch charge ladder: segment decals centred in the lane, lighting from
+  // the plunger upward. Sits inside the channel, crossing nothing.
+  {
+    const p = pull(), N = 16;
+    const g0 = F.lane.seatY - F.h * 0.03, g1 = F.lane.top + F.h * 0.02;
+    const segH = Math.max(2.5, (g0 - g1) / N * 0.42), pitch = (g0 - g1) / N;
+    const halfW = (F.lane.right - F.lane.left) * 0.26;
+    const litCount = Math.round(p * N);
+    const minIdx = Math.round(minClearPull() * N);
+    for (let i = 0; i < N; i++) {
+      const y = g0 - i * pitch - segH / 2;
+      const lit = i < litCount;
+      const hot = i / N > 0.86;
+      rr(ctx, F.lane.x - halfW, y, halfW * 2, segH, segH / 2);
+      if (lit) {
+        ctx.fillStyle = hot ? '#ff6a6a' : T.primary;
+        ctx.shadowColor = ctx.fillStyle; ctx.shadowBlur = 8; ctx.fill(); ctx.shadowBlur = 0;
+      } else {
+        ctx.fillStyle = 'rgba(255,255,255,0.07)'; ctx.fill();
+      }
+      if (i === minIdx) { // the charge that clears the lane flap
+        ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(F.lane.x - halfW - 5, y + segH / 2); ctx.lineTo(F.lane.x - halfW - 2, y + segH / 2);
+        ctx.moveTo(F.lane.x + halfW + 2, y + segH / 2); ctx.lineTo(F.lane.x + halfW + 5, y + segH / 2);
+        ctx.stroke();
+      }
+    }
   }
   ctx.restore();
 }
@@ -1050,6 +1090,16 @@ function drawPlunger(T, now) {
   dome(ctx, x, knobY + 8, Math.max(12, S * 0.028), T.primary, '#141828', T.primary);
   text(ctx, 'PULL', x, knobY + 8, 8, '#fff', { spacing: '1px', emboss: true });
   ctx.beginPath(); ctx.moveTo(x - 6, knobY + 26); ctx.lineTo(x, knobY + 32); ctx.lineTo(x + 6, knobY + 26); ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.lineWidth = 1.5; ctx.stroke();
+  // charge readout: an LED panel below the cabinet, beside the plunger
+  {
+    const pct = String(Math.round(p * 100)).padStart(2, '0') + '%';
+    const pw = 62, ph = 24, px0 = Math.max(6, x - 32 - pw), py0 = F.y0 + F.h + 8;
+    rr(ctx, px0, py0, pw, ph, 5);
+    ctx.fillStyle = 'rgba(4,5,12,0.92)'; ctx.fill();
+    ctx.strokeStyle = T.primary; ctx.globalAlpha = 0.4; ctx.lineWidth = 1; ctx.stroke(); ctx.globalAlpha = 1;
+    dmText(ctx, pct, px0 + pw / 2, py0 + ph / 2, 12, p >= 0.98 ? '#ff6a6a' : T.primary, { align: 'center', glow: 7, panel: true });
+    text(ctx, 'CHARGE', px0 + pw / 2, py0 - 7, 7, 'rgba(255,255,255,0.4)', { spacing: '2px' });
+  }
   // seated ball preview (a new ball waits on the plunger when none is seated)
   if (!state.seated) {
     const r = PHYS.ballRadius * F.w;
@@ -1084,7 +1134,8 @@ function drawBalls(now) {
     drawBallSprite(x, y, r, b.type);
     if (!b.dying && !b.held) {
       const col = b.total > 0 ? '#7dffb9' : b.total < 0 ? '#ff8d8d' : 'rgba(255,255,255,0.85)';
-      text(ctx, fmtMoney(b.total), x, y - b.r - 10, 12, col, { glow: 6, emboss: true });
+      const pop = Math.max(0, 1 - (now - b.popT) / 260); // scoreboard flicker on each award
+      dmText(ctx, fmtMoney(b.total), x, y - b.r - 12, 9 + 2.5 * pop, pop > 0.5 ? '#ffffff' : col, { align: 'center', glow: 6 + 10 * pop });
       for (let i = 0; i < b.flips; i++) { ctx.beginPath(); ctx.arc(x - (b.flips - 1) * 3 + i * 6, y + b.r + 6, 2, 0, Math.PI * 2); ctx.fillStyle = theme().primary; ctx.fill(); }
     }
   }
@@ -1094,22 +1145,22 @@ function drawEffects(now) {
   for (const fx of state.effects) {
     const t = Math.min(1, (now - fx.t0) / fx.dur);
     if (fx.type === 'float') {
-      ctx.globalAlpha = 1 - t * t; text(ctx, fx.text, fx.x, fx.y - 26 * easeOutCubic(t), fx.size || 18, fx.color, { glow: 8, emboss: true }); ctx.globalAlpha = 1;
+      dmText(ctx, fx.text, fx.x, fx.y - 26 * easeOutCubic(t), (fx.size || 18) * 0.72, fx.color, { align: 'center', glow: 8, alpha: 1 - t * t });
+    } else if (fx.type === 'mystery') {
+      const inT = Math.min(1, t * 5), outT = Math.max(0, (t - 0.7) * 3.3);
+      dmText(ctx, fx.text, fx.x, fx.y + 8 * (1 - easeOutCubic(inT)), 9, fx.color, { align: 'center', glow: 10, alpha: inT * (1 - outT) });
     } else if (fx.type === 'puff') {
       ctx.globalAlpha = (1 - t) * 0.5; ctx.beginPath(); ctx.arc(fx.x, fx.y, 4 + 18 * easeOutCubic(t), 0, Math.PI * 2); ctx.strokeStyle = '#ffe9a8'; ctx.lineWidth = 2; ctx.stroke(); ctx.globalAlpha = 1;
     } else if (fx.type === 'reveal') {
       const inT = Math.min(1, t * 6), outT = Math.max(0, (t - 0.75) * 4);
       ctx.globalAlpha = inT * (1 - outT);
       const y = fx.y - 22 * easeOutCubic(inT);
-      ctx.font = '700 17px system-ui, -apple-system, sans-serif';
-      const wPrize = ctx.measureText(fx.prize).width;
-      ctx.font = '600 12px system-ui, -apple-system, sans-serif';
-      const wMult = ctx.measureText(fx.mult).width;
-      const cw = wPrize + wMult + 34, x0 = fx.x - cw / 2;
+      const wPrize = dmWidth(fx.prize, 14), wMult = dmWidth(fx.mult, 10);
+      const cw = wPrize + wMult + 36, x0 = fx.x - cw / 2;
       ctx.save(); ctx.translate(3, 4); rr(ctx, x0, y - 17, cw, 34, 8); ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fill(); ctx.restore();
       rr(ctx, x0, y - 17, cw, 34, 8); ctx.fillStyle = 'rgba(8,10,28,0.94)'; ctx.fill(); ctx.strokeStyle = fx.color; ctx.lineWidth = 1.5; ctx.stroke();
-      text(ctx, fx.prize, x0 + 12, y + 1, 17, fx.color, { align: 'left', glow: 8 });
-      text(ctx, fx.mult, x0 + 12 + wPrize + 10, y + 1, 12, 'rgba(200,205,225,0.8)', { align: 'left', bold: false });
+      dmText(ctx, fx.prize, x0 + 13, y, 14, fx.color, { align: 'left', glow: 9 });
+      dmText(ctx, fx.mult, x0 + 13 + wPrize + 12, y + 1, 10, 'rgba(190,198,225,0.85)', { align: 'left' });
       ctx.globalAlpha = 1;
     } else if (fx.type === 'burst') {
       ctx.globalAlpha = 1 - t;
@@ -1119,7 +1170,8 @@ function drawEffects(now) {
       const inT = Math.min(1, t * 5), outT = Math.max(0, (t - 0.8) * 5);
       ctx.globalAlpha = inT * (1 - outT);
       ctx.save(); ctx.translate(W / 2, H * 0.3); ctx.scale(0.8 + 0.2 * easeInOut(inT), 0.8 + 0.2 * easeInOut(inT));
-      text(ctx, fx.text, 0, -14, 26, '#ffd65a', { glow: 18, emboss: true }); text(ctx, fx.sub, 0, 22, 32, '#7dffb9', { glow: 14, emboss: true });
+      dmText(ctx, fx.text, 0, -16, 15, '#ffd65a', { align: 'center', glow: 18 });
+      dmText(ctx, fx.sub, 0, 20, 26, '#7dffb9', { align: 'center', glow: 16 });
       ctx.restore(); ctx.globalAlpha = 1;
     }
   }

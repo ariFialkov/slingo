@@ -4,8 +4,8 @@
 // of +/− component hits of any tier, with every award a SCORE_STEP multiple,
 // and (3) procedural boards generate with their components in play and pass
 // the V-pocket trap scan.
-import { THEMES, TARGET_RTP, SCORE_STEP, BALL_TYPES, round2 } from '../js/config.js';
-import { awardFor, residualFor, rollMultiplier, generateSpec, pointInPoly, findTrap } from '../js/field.js';
+import { THEMES, TARGET_RTP, SCORE_STEP, MIN_TOTAL_FRAC, BALL_TYPES, round2 } from '../js/config.js';
+import { awardFor, pickAim, exitMultiplier, rollMultiplier, generateSpec, pointInPoly, findTrap } from '../js/field.js';
 
 let failed = false;
 const report = (ok, msg) => { if (!ok) failed = true; console.log(`${ok ? 'PASS' : 'FAIL'}  ${msg}`); };
@@ -22,30 +22,45 @@ for (const t of Object.values(THEMES)) {
   report(Math.abs(total / N - TARGET_RTP) < 0.05, `monte-carlo INFERNO EV = ${(total / N).toFixed(3)} (highest variance table)`);
 }
 
+// Steering: components must never go silent, and the exit multiplier must
+// reconcile whatever total the ball arrives with to its predetermined prize.
 {
-  let trials = 0, badStep = 0, negativeRes = 0;
+  // "late" = once the ball is established (past its 3rd component hit). Early
+  // no-ops are legitimate: a − component can't take from a total of $0.00.
+  let trials = 0, badStep = 0, zeroLate = 0, lateAwards = 0, inconsistent = 0, belowFloor = 0;
+  const mults = [];
   for (const theme of Object.values(THEMES)) {
     for (const type of BALL_TYPES) {
       const step = round2(SCORE_STEP * type.bet);
       for (const [mult] of [[0], ...theme.table]) {
         for (let k = 0; k < 120; k++) {
-          const ball = { stake: type.bet, target: round2(mult * type.bet), total: 0 };
-          const hits = Math.floor(Math.random() * 14);
+          const target = round2(mult * type.bet);
+          const ball = { stake: type.bet, target, total: 0, aim: pickAim(target, type.bet) };
+          const hits = 1 + Math.floor(Math.random() * 40); // include very long-lived balls
           for (let i = 0; i < hits; i++) {
             const a = awardFor(ball, Math.random() < 0.6 ? +1 : -1, 1 + ((Math.random() * 3) | 0));
-            if (Math.abs(Math.round(a / step) * step - a) > 1e-9) badStep++;
+            if (i >= 3) { lateAwards++; if (a === 0) zeroLate++; }
+            if (a !== 0 && Math.abs(Math.round(a / step) * step - a) > 1e-9) badStep++;
             ball.total = round2(ball.total + a);
           }
-          const res = residualFor(ball);
-          if (round2(ball.total + res) !== ball.target) { failed = true; console.log(`FAIL  ${theme.key} ${type.key} ×${mult}: ended ${round2(ball.total + res)} ≠ ${ball.target}`); }
-          if (res < 0) negativeRes++;
+          const M = exitMultiplier(ball);
+          if (ball.total < MIN_TOTAL_FRAC * type.bet) belowFloor++;
+          else if (Math.abs(ball.total * M - target) > 0.005) {
+            inconsistent++;
+            if (inconsistent < 4) console.log(`      ${theme.key} ${type.key} ×${mult}: ${ball.total} × ${M} ≠ ${target}`);
+          }
+          if (target > 0) mults.push(M);
           trials++;
         }
       }
     }
   }
+  mults.sort((a, b) => a - b);
+  const pct = (p) => mults[Math.floor(mults.length * p)].toFixed(2);
   report(badStep === 0, `all awards are SCORE_STEP multiples (${badStep} violations)`);
-  report(true, `steering settled ${trials} balls exactly on target; ${(100 * negativeRes / trials).toFixed(1)}% negative exit reveals`);
+  report(zeroLate / lateAwards < 0.01, `components stay live all ball: ${(100 * (1 - zeroLate / lateAwards)).toFixed(2)}% of ${lateAwards} established-ball hits scored`);
+  report(inconsistent === 0, `${trials} balls reconcile exactly at the exit (${inconsistent} bad, ${belowFloor} below the total floor)`);
+  report(true, `exit multipliers: p10 ×${pct(0.1)}  median ×${pct(0.5)}  p90 ×${pct(0.9)}`);
 }
 
 {

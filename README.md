@@ -26,10 +26,11 @@ standalone app (works offline after first load). `./build.sh` produces a clean
   to compress the spring, release to launch. The device buzzes at full pull and
   the camera kicks on release proportionally to strength.
 - **Desktop**: identical, with click-and-drag.
-- A gauge along the launch lane shows pull strength and the tick that clears
-  the lane flap. Launch speed is a pure function of pull, so the same pull on
-  the same board always enters the field the same way. Too weak, and the ball
-  drops back onto the plunger — pull again, it's still the same bet.
+- A segmented charge ladder inside the launch lane lights from the plunger up,
+  with a notch marking the charge that clears the lane flap, and a `CHARGE`
+  LED readout below the cabinet. Launch speed is a pure function of pull, so
+  the same pull on the same board always enters the field the same way. Too
+  weak, and the ball drops back onto the plunger — pull again, same bet.
 - **Ball type** (bottom button) cycles the bet: Bronze $1, Silver $5, Gold $10,
   Platinum $25, Diamond $100. The ball waiting on the plunger takes that colour.
 - Launch as fast as you can pull; multiple balls play out at once, each with its
@@ -89,14 +90,23 @@ Every ball is an isolated bet at the ball's bet value, decided the moment it is
 launched: a multiplier is drawn from the board's prize table, fixing the ball's
 **target prize**. The physics that follows is real but purely visual.
 
-- **Signed components steer toward the target.** A + component awards a share
-  of the remaining gap (by tier); a − component pulls back an overshoot (or
-  nibbles a nominal step). Awards are multiples of 5% of the stake.
-- **Every route ends at an exit** (hole, basket or the well), which settles the
-  bet at exactly the target. The result card shows the prize (green if it is at
-  least the bet, red otherwise) and its multiplier.
-- Balls rattling against one component stop scoring and get kicked loose;
-  scoring stops and gravity ramps at 12 s; force-settle at 22 s.
+- **Every exit is a mystery multiplier.** When a ball is swallowed, the exit
+  reveals the multiplier that turns its running total into the prize fixed at
+  launch (`$12.50 × 1.60`). Because the exit computes that multiplier from
+  whatever total arrives, the result is exactly the predetermined one no matter
+  where or when the ball lands — nothing has to be reserved for the ending.
+- **Components therefore never go quiet.** Each ball trends toward an *aim*
+  total (the one that would make its exit multiplier a satisfying number), and
+  once it's near that aim, + and − components keep nudging it up and down
+  instead of running out of room. Over 99.6% of hits on an established ball
+  score, however long it stays in play.
+- A + component awards a share of the remaining gap (by tier); a − component
+  pulls back an overshoot or takes a bite out of the band. Awards are always
+  multiples of 5% of the stake, and the running total flickers white on each.
+- The result card shows the prize (green if it is at least the bet, red
+  otherwise) and its bet-to-prize multiplier in grey.
+- Balls rattling on one component are kicked loose (without scoring that hit);
+  gravity ramps at 12 s and a ball is force-settled at 22 s.
 
 ```sh
 node tools/verify-rtp.js   # 6 tables at 96% EV; 27,000 steered balls settle exactly; boards + trap scan
@@ -110,6 +120,7 @@ index.html            app shell + HUD
 style.css             layout, HUD, safe-area handling
 js/config.js          RTP target, themes (palettes + prize tables), ball types, physics
 js/field.js           board generator, trap scan, deterministic scoring/steering
+js/font.js            5x7 dot-matrix scoreboard font drawn onto canvas (no webfont)
 js/main.js            plunger, pinball physics, components, auto-flippers, rendering
 js/audio.js           tiny WebAudio synth (no assets)
 sw.js                 service worker (offline cache)
